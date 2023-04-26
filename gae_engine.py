@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+
 from easyrl.configs import cfg
 from easyrl.engine.basic_engine import BasicEngine
 from easyrl.utils.common import get_list_stats
@@ -17,7 +18,7 @@ from easyrl.utils.torch_util import EpisodeDataset
 
 class PPOEngine(BasicEngine):
     def train(self):
-    ## TODO make this call our things instead of PPO
+        ## TODO make this call our things instead of PPO
         for iter_t in count():
             if iter_t % cfg.alg.eval_interval == 0:
                 det_log_info, _ = self.eval(eval_num=cfg.alg.test_num,
@@ -32,10 +33,19 @@ class PPOEngine(BasicEngine):
                                       step=self.cur_step)
             else:
                 eval_log_info = None
-            traj, rollout_time = self.rollout_once(sample=True,
-                                                   get_last_val=True,
-                                                   time_steps=cfg.alg.episode_steps)
-            train_log_info = self.train_once(traj)
+            # Train for batch
+            # TODO: make num_traj exist somehow, add to config???
+            trajs, rollout_time = self.rollout_batch(num_traj, sample=True,
+                                                     get_last_val=True,
+                                                     time_steps=cfg.alg.episode_steps)
+
+            # TODO: got to train K times for each of the V values...
+            train_log_info = self.train_batch(trajs)
+
+            # traj, rollout_time = self.rollout_once(sample=True,
+            #                                        get_last_val=True,
+            #                                        time_steps=cfg.alg.episode_steps)
+            # train_log_info = self.train_once(traj)
             if iter_t % cfg.alg.log_interval == 0:
                 train_log_info['train/rollout_time'] = rollout_time
                 if eval_log_info is not None:
@@ -113,6 +123,17 @@ class PPOEngine(BasicEngine):
                 self._eval_is_best = False
         return log_info, raw_traj_info
 
+    def rollout_batch(self, num_trajs, **kwargs):
+        t0 = time.perf_counter()
+        self.agent.eval_mode()
+        trajs = []
+        for i in range(num_trajs):
+            trajs.append(self.runner(**kwargs))
+        t1 = time.perf_counter()
+        elapsed_time = t1 - t0
+        trajs = torch.vstack(trajs)
+        return trajs, elapsed_time
+
     def rollout_once(self, *args, **kwargs):
         t0 = time.perf_counter()
         self.agent.eval_mode()
@@ -120,6 +141,9 @@ class PPOEngine(BasicEngine):
         t1 = time.perf_counter()
         elapsed_time = t1 - t0
         return traj, elapsed_time
+
+    def train_batch(self, trajs):
+        # TODO
 
     def train_once(self, traj):
         self.optim_stime = time.perf_counter()
