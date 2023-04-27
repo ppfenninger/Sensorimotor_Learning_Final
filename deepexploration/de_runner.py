@@ -10,14 +10,14 @@ from easyrl.utils.gym_util import get_render_images
 from easyrl.utils.torch_util import torch_to_np
 
 
-class EpisodicRunner(BasicRunner):
+class DeepExplorationRunner(BasicRunner):
     """
     This only applies to environments that are wrapped by VecEnv.
     It assumes the environment is automatically reset if done=True
     """
 
     def __init__(self, *args, **kwargs):
-        super(EpisodicRunner, self).__init__(*args, **kwargs)
+        super(DeepExplorationRunner, self).__init__(*args, **kwargs)
 
     @torch.no_grad()
     def __call__(self, time_steps, sample=True, evaluation=False,
@@ -61,8 +61,6 @@ class EpisodicRunner(BasicRunner):
                 action = env.random_actions()
                 action_info = dict()
             else:
-                # TODO
-
                 action, action_info = self.agent.get_action(ob,
                                                             sample=sample,
                                                             **action_kwargs)

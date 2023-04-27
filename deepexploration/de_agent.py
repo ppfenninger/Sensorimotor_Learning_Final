@@ -21,16 +21,23 @@ from easyrl.utils.torch_util import move_to
 from easyrl.utils.torch_util import save_model
 from easyrl.utils.torch_util import torch_float
 from easyrl.utils.torch_util import torch_to_np
+from typing import List
 
 
 @dataclass
-class PPOAgent(BaseAgent):
+class DeepExplorationAgent(BaseAgent):
     actor: nn.Module
-    critic: nn.Module
+    critics: List[nn.Module]
     same_body: float = False
+    exploration_mode = False
+    exploration_horizon = 1000
+    exploration_steps = 0
+    beta = 0.1
+    epsilon = 0.2
+    k_samples = 10
 
     def __post_init__(self):
-        move_to([self.actor, self.critic],
+        move_to([self.actor] + self.critics,
                 device=cfg.alg.device)
         if cfg.alg.vf_loss_type == 'mse':
             self.val_loss_criterion = nn.MSELoss().to(cfg.alg.device)
@@ -38,7 +45,9 @@ class PPOAgent(BaseAgent):
             self.val_loss_criterion = nn.SmoothL1Loss().to(cfg.alg.device)
         else:
             raise TypeError(f'Unknown value loss type: {cfg.alg.vf_loss_type}!')
-        all_params = list(self.actor.parameters()) + list(self.critic.parameters())
+        all_params = list(self.actor.parameters())
+        for critic in self.critics:
+            all_params += list(critic.parameters())
         # keep unique elements only. The following code works for python >=3.7
         # for earlier version of python, u need to use OrderedDict
         self.all_params = dict.fromkeys(all_params).keys()
@@ -84,31 +93,69 @@ class PPOAgent(BaseAgent):
             self.lr_scheduler = LambdaLR(optimizer=self.optimizer,
                                          lr_lambda=[p_lr_lambda, v_lr_lambda])
 
+    # @torch.no_grad()
+    # def get_action(self, ob, sample=True, *args, **kwargs):
+    #     self.eval_mode()
+    #     t_ob = torch_float(ob, device=cfg.alg.device)
+    #     act_dist, val = self.get_act_val(t_ob)
+    #     action = action_from_dist(act_dist,
+    #                               sample=sample)
+    #     log_prob = action_log_prob(action, act_dist)
+    #     entropy = action_entropy(act_dist, log_prob)
+    #     action_info = dict(
+    #         log_prob=torch_to_np(log_prob),
+    #         entropy=torch_to_np(entropy),
+    #         val=torch_to_np(val)
+    #     )
+    #     return torch_to_np(action), action_info
+
+    @torch.no_grad()
+    def _explore_actions(self, ob, transition_function, sample=True, *args, **kwargs):
+        '''When in exploration mode, we call this function to explore actions and select
+        which action to take. We explore k_samples actions and select the one with the
+        highest value. That value is determined by the critics by choosing the action with
+        the highest critic value average plus beta time the critic value std (exploration bonus).
+        transition_function is a function that takes in a state, action pair and returns the
+        next state '''
+        self.eval_mode()
+        t_ob = torch_float(ob, device=cfg.alg.device)
+        act_dist, avg_val, std_val = self.get_act_val(t_ob)
+        candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
+
+
+        candidate_evaluation = [eval_tuple[1] + self.beta * eval_tuple[2] for eval_tuple in candidate_values]
+
+        candidate_values = [self.get_act_val(t_ob, action=action)[1] for action in candidate_actions]
+
+
+
     @torch.no_grad()
     def get_action(self, ob, sample=True, *args, **kwargs):
         self.eval_mode()
-        t_ob = torch_float(ob, device=cfg.alg.device)
-        act_dist, val = self.get_act_val(t_ob)
-        action = action_from_dist(act_dist,
-                                  sample=sample)
-        log_prob = action_log_prob(action, act_dist)
-        entropy = action_entropy(act_dist, log_prob)
-        action_info = dict(
-            log_prob=torch_to_np(log_prob),
-            entropy=torch_to_np(entropy),
-            val=torch_to_np(val)
-        )
+        if self.exploration_mode:
+
+        else:
+            t_ob = torch_float(ob, device=cfg.alg.device)
+            act_dist, avg_val, std_val = self.get_act_val(t_ob)
+            action = action_from_dist(act_dist,
+                                      sample=sample)
+            log_prob = action_log_prob(action, act_dist)
+            entropy = action_entropy(act_dist, log_prob)
+            action_info = dict(
+                log_prob=torch_to_np(log_prob),
+                entropy=torch_to_np(entropy),
+                val=torch_to_np(val)
+            )
+
         return torch_to_np(action), action_info
 
     def get_act_val(self, ob, *args, **kwargs):
+        '''Returns the action distribution, the average value of the critics, and
+        the std of the critics'''
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
-        if self.same_body:
-            val, body_out = self.critic(body_x=body_out)
-        else:
-            val, body_out = self.critic(x=ob)
-        val = val.squeeze(-1)
-        return act_dist, val
+        vals = np.array([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
+        return act_dist, np.mean(vals), np.std(vals)
 
     @torch.no_grad()
     def get_val(self, ob, *args, **kwargs):
@@ -202,7 +249,7 @@ class PPOAgent(BaseAgent):
         self.actor.train()
         self.critic.train()
 
-    def eval_mode(self):
+    def eval_mode(self): #doesn't collect gradients
         self.actor.eval()
         self.critic.eval()
 
