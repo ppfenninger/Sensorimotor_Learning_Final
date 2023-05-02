@@ -7,6 +7,6 @@ url='#',
 author='auth',
 author_email='author@email.com',
 license='MIT',
-packages=['deepexploration'],
+packages=['deepexploration', 'hello'],
 zip_safe=False
 )
