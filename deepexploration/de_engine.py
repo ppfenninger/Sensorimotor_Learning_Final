@@ -1,7 +1,6 @@
 import time
 from itertools import count
 from dataclasses import dataclass
-from torch import nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data import Subset
@@ -11,11 +10,8 @@ import torch.optim as optim
 from easyrl.configs import cfg
 import tqdm
 from easyrl.utils.common import save_traj
-from utils import create_actor
-from utils import load_expert_agent
-from utils import generate_demonstration_data
-from utils import run_inference
-from utils import eval_agent
+from deepexploration.utils import run_inference
+from deepexploration.utils import eval_agent
 from typing import Any
 
 
