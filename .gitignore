@@ -1,2 +1,4 @@
 .idea/*
 /deepexploration.egg-info/
+/dist/
+/deepexploration/deepexploration.egg-info/
