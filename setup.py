@@ -44,7 +44,7 @@ def pkg_files(directory):
 # extra_pkg_files = pkg_files('src/airobot/urdfs')
 
 setup(
-    name='airobot',
+    name='deepexploration',
     version='0.1.1',
     author='Us',
     url='https://github.com/ppfenninger/Sensorimotor_Learning_Final.git@package-testing',
