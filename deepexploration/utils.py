@@ -1,30 +1,24 @@
 ## Import all dependencies for file
+from dataclasses import dataclass
+
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import numpy as np
+from tqdm.notebook import tqdm
 from easyrl.configs import cfg
-from easyrl.utils.common import save_traj
-## fix import error above
+from easyrl.models.diag_gaussian_policy import DiagGaussianPolicy
+from easyrl.models.mlp import MLP
 from easyrl.runner.nstep_runner import EpisodicRunner
-from easyrl.utils.torch_util import save_model
+from easyrl.utils.common import save_traj
 from easyrl.utils.torch_util import action_entropy
 from easyrl.utils.torch_util import action_from_dist
 from easyrl.utils.torch_util import action_log_prob
-from easyrl.utils.torch_util import clip_grad
-from easyrl.utils.common import set_random_seed
-from easyrl.utils.gym_util import make_vec_env
-from easyrl.utils.common import load_from_json
 from easyrl.utils.torch_util import freeze_model
+from easyrl.utils.torch_util import load_state_dict
 from easyrl.utils.torch_util import move_to
 from easyrl.utils.torch_util import torch_float
 from easyrl.utils.torch_util import torch_to_np
-from base64 import b64encode
-from IPython import display as ipythondisplay
-from dataclasses import dataclass
-import tqdm
+
 
 @dataclass
 class BasicAgent:
@@ -57,14 +51,15 @@ def create_actor(env):
     ob_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     actor_body = MLP(input_size=ob_dim,
-                    hidden_sizes=[64],
-                    output_size=64,
-                    hidden_act=nn.Tanh,
-                    output_act=nn.Tanh)
+                     hidden_sizes=[64],
+                     output_size=64,
+                     hidden_act=nn.Tanh,
+                     output_act=nn.Tanh)
     actor = DiagGaussianPolicy(actor_body,
                                in_features=64,
                                action_dim=action_dim)
     return actor
+
 
 def load_expert_agent(env, device, expert_model_path='pusher_expert_model.pt'):
     expert_actor = create_actor(env=env)
@@ -76,13 +71,15 @@ def load_expert_agent(env, device, expert_model_path='pusher_expert_model.pt'):
     freeze_model(expert_agent.actor)
     return expert_agent
 
+
 def generate_demonstration_data(expert_agent, env, num_trials):
     return run_inference(expert_agent, env, num_trials, return_on_done=True)
+
 
 def run_inference(agent, env, num_trials, return_on_done=False, sample=True, disable_tqdm=False, render=False):
     runner = EpisodicRunner(agent=agent, env=env)
     trajs = []
-    for trial_id in tqdm(range(num_trials), desc='Run', disable=disable_tqdm):
+    for _ in tqdm(range(num_trials), desc='Run', disable=disable_tqdm):
         env.reset()
         traj = runner(time_steps=cfg.alg.episode_steps,
                       sample=sample,
@@ -92,10 +89,10 @@ def run_inference(agent, env, num_trials, return_on_done=False, sample=True, dis
         trajs.append(traj)
     return trajs
 
+
 def eval_agent(agent, env, num_trials, disable_tqdm=False, render=False):
     trajs = run_inference(agent, env, num_trials, return_on_done=True,
                           disable_tqdm=disable_tqdm, render=render)
-    tsps = []
     successes = []
     rets = []
     for traj in trajs:

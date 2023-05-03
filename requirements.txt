@@ -1,0 +1,6 @@
+numpy~=1.24.3
+tqdm~=4.65.0
+easyrl~=0.0.1
+ipython~=8.13.1
+setuptools~=65.5.1
+torch~=2.0.0
