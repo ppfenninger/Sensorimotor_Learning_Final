@@ -24,7 +24,7 @@ class DeepExplorationRunner(BasicRunner):
                  return_on_done=False, render=False, render_image=False,
                  sleep_time=0, reset_first=False,
                  reset_kwargs=None, action_kwargs=None,
-                 random_action=False, get_last_val=False):
+                 random_action=False, exploration_enabled=True, get_last_val=False):
         traj = Trajectory()
         if reset_kwargs is None:
             reset_kwargs = {}
@@ -57,14 +57,51 @@ class DeepExplorationRunner(BasicRunner):
                 # get render images at the same time step as ob
                 imgs = get_render_images(env)
 
-            if random_action:
+            if random_action and not exploration_enabled:
+                # Samples random action, does not explore
                 action = env.random_actions()
                 action_info = dict()
-            else:
+
+            elif not random_action and not exploration_enabled:
+                # Samples from policy, does not explore
                 action, action_info = self.agent.get_action(ob,
                                                             sample=sample,
                                                             **action_kwargs)
+            elif not random_action and exploration_enabled:
+                # Samples from policy, explores
 
+                if self.agent.is_in_exploration_mode:
+                    if self.agent.exploration_steps < self.agent.exploration_horizon:
+
+                        # candidate_actions is a list of (action, action_info) tuples
+                        candidate_actions = self.agent.get_candidate_actions(ob, sample=sample, **action_kwargs)
+
+                        # TODO: Is this step super expensive?
+                        next_states_from_candidate_actions = [deepcopy(env).step(candidate_action[0])[0]
+                                                              for candidate_action in candidate_actions]
+
+                        # Calculated as average critic value plus exploration bonus (beta times std of critic values)
+                        candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
+
+                        action, action_info = np.random.choice(candidate_actions,
+                                                               1,  # choose 1 action proportional to score
+                                                               p=candidate_scores / sum(candidate_scores))[0]
+                        self.agent.exploration_steps += 1
+
+                    else:
+                        # We have finished exploring, so we turn off exploration mode
+                        self.agent.is_in_exploration_mode = False
+
+                if not self.agent.is_in_exploration_mode:
+                    action, action_info = self.agent.get_action(ob, sample=sample, **action_kwargs)
+
+            else:
+                raise ValueError('random_action and exploration_enabled combined is currently unsupported')
+
+            '''While we hav already calculated the next state in the previous step, we need to do it again here
+            because we need to pass the next state to the agent to calculate the next action. This is a bit
+            inefficient, but it's easy. Also, we can think of the deep copied env above as a very
+            accurate forward model of the environment, whereas this step is the actual environment.'''
             next_ob, reward, done, info = env.step(action)
 
             if render_image:

@@ -155,27 +155,27 @@ class DeepExplorationEngine:
                                                      time_steps=cfg.alg.episode_steps)
 
             # TODO: got to train K times for each of the V values...
-            train_log_info = self.train_batch(trajs)
+            train_log_infos = self.train_batch(trajs)
             # logging things
             if iter_t % cfg.alg.log_interval == 0:
-                train_log_info['train/rollout_time'] = rollout_time
-                if eval_log_info is not None:
-                    train_log_info.update(eval_log_info)
-                if cfg.alg.linear_decay_lr:
-                    train_log_info.update(self.agent.get_lr())
-                if cfg.alg.linear_decay_clip_range:
-                    train_log_info.update(dict(clip_range=cfg.alg.clip_range))
-                scalar_log = {'scalar': train_log_info}
-                self.tf_logger.save_dict(scalar_log, step=self.cur_step)
+                for train_log_info in train_log_infos:
+                    train_log_info['train/rollout_time'] = rollout_time
+                    if eval_log_info is not None:
+                        train_log_info.update(eval_log_info)
+                    if cfg.alg.linear_decay_lr:
+                        train_log_info.update(self.agent.get_lr())
+                    if cfg.alg.linear_decay_clip_range:s
+                        train_log_info.update(dict(clip_range=cfg.alg.clip_range))
+                    scalar_log = {'scalar': train_log_info}
+                    self.tf_logger.save_dict(scalar_log, step=self.cur_step)
             if self.cur_step > cfg.alg.max_steps:
                 break
         return dataset_sizes, success_rates
 
+    ## TODO ensure this eval works, it probably does not require change
     @torch.no_grad()
     def eval(self, render=False, save_eval_traj=False, eval_num=1,
              sleep_time=0, sample=True, smooth=True, no_tqdm=None):
-
-        ## TODO ensure this eval works, it probably does not require change
         time_steps = []
         rets = []
         lst_step_infos = []
@@ -238,7 +238,7 @@ class DeepExplorationEngine:
 
         # TODO make sure we can iterate through the critics
         for critic in self.agent.critic:
-            critic_optim_info = self.train_critic(trajs, critic)
+            critic_optim_info = self.agent.train_critic(trajs, critic)
             # consider logging critic optim info later?
 
         # TODO - ensure this optimizing is just for the actor, not value function
@@ -276,7 +276,7 @@ class DeepExplorationEngine:
             trajs.append(self.runner(**kwargs))
         t1 = time.perf_counter()
         elapsed_time = t1 - t0
-        trajs = torch.vstack(trajs)
+        # trajs = torch.vstack(trajs)
         return trajs, elapsed_time
 
 

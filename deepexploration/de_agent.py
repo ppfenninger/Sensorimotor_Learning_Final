@@ -29,12 +29,15 @@ class DeepExplorationAgent(BaseAgent):
     actor: nn.Module
     critics: List[nn.Module]
     same_body: float = False
-    exploration_mode = False
+    is_in_exploration_mode = False
     exploration_horizon = 1000
     exploration_steps = 0
     beta = 0.1
     epsilon = 0.2
     k_samples = 10
+    gae_lambda = .5
+    discount = .9
+    T = 5000
 
     def __post_init__(self):
         move_to([self.actor] + self.critics,
@@ -110,58 +113,70 @@ class DeepExplorationAgent(BaseAgent):
     #     return torch_to_np(action), action_info
 
     @torch.no_grad()
-    def _explore_actions(self, ob, transition_function, sample=True, *args, **kwargs):
+    def get_candidate_actions(self, ob, sample=True, *args, **kwargs):
         '''When in exploration mode, we call this function to explore actions and select
-        which action to take. We explore k_samples actions and select the one with the
-        highest value. That value is determined by the critics by choosing the action with
-        the highest critic value average plus beta time the critic value std (exploration bonus).
-        transition_function is a function that takes in a state, action pair and returns the
-        next state '''
+        which action to take. We explore k_samples actions and return them. The DE Runner will take these actions
+         and evaluate what the next state will be. We can think of this as having a forward model which is a copy
+         of our enviornment which the runner has access to. We can imagine a world where instead of actually simulating
+         each candidate action on our real environment, we simulate them on this forward model. This is the idea behind
+         model based RL.'''
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
         act_dist, avg_val, std_val = self.get_act_val(t_ob)
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
+        return candidate_actions
 
+    @torch.no_grad()
+    def get_candidate_scores(self, next_states_from_candidate_actions, *args, **kwargs):
+        '''This function takes in the next states from the candidate actions (using our environment but we could also
+        use a forward model) and returns scores for each candidate action. These scores are the sum of the average
+        value of the next state from our critics and beta times the standard deviation of the next state from our
+        critics.'''
+        self.eval_mode()
+        avg_values = []
+        std_values = []
+        for next_state in next_states_from_candidate_actions:
+            act_dist, avg_val, std_val = self.get_act_val_ensemble(next_state)
+            avg_values.append(avg_val)
+            std_values.append(std_val)
 
-        candidate_evaluation = [eval_tuple[1] + self.beta * eval_tuple[2] for eval_tuple in candidate_values]
-
-        candidate_values = [self.get_act_val(t_ob, action=action)[1] for action in candidate_actions]
-
-
+        scores = [avg_val + self.beta * std_val for avg_val, std_val in zip(avg_values, std_values)]
+        return scores
 
     @torch.no_grad()
     def get_action(self, ob, sample=True, *args, **kwargs):
         self.eval_mode()
-        if self.exploration_mode:
-
-        else:
-            t_ob = torch_float(ob, device=cfg.alg.device)
-            act_dist, avg_val, std_val = self.get_act_val(t_ob)
-            action = action_from_dist(act_dist,
-                                      sample=sample)
-            log_prob = action_log_prob(action, act_dist)
-            entropy = action_entropy(act_dist, log_prob)
-            action_info = dict(
-                log_prob=torch_to_np(log_prob),
-                entropy=torch_to_np(entropy),
-                val=torch_to_np(val)
-            )
+        t_ob = torch_float(ob, device=cfg.alg.device)
+        act_dist, avg_val, std_val = self.get_act_val_ensemble(t_ob)
+        action = action_from_dist(act_dist,
+                                  sample=sample)
+        log_prob = action_log_prob(action, act_dist)
+        entropy = action_entropy(act_dist, log_prob)
+        action_info = dict(
+            log_prob=torch_to_np(log_prob),
+            entropy=torch_to_np(entropy),
+            val=torch_to_np(avg_val)
+        )
 
         return torch_to_np(action), action_info
 
-    def get_act_val(self, ob, *args, **kwargs):
+    def get_act_val_ensemble(self, ob, *args, **kwargs):
         '''Returns the action distribution, the average value of the critics, and
         the std of the critics'''
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
+        # TODO: modify to torch version instead of numpy
         vals = np.array([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
         return act_dist, np.mean(vals), np.std(vals)
 
     @torch.no_grad()
-    def get_val(self, ob, *args, **kwargs):
+    def get_val(self, ob, critic_index, *args, **kwargs):
+        '''
+        Returns the value of the critic at critic_index predicts for ob
+        '''
         self.eval_mode()
         ob = torch_float(ob, device=cfg.alg.device)
-        val, body_out = self.critic(x=ob)
+        val, body_out = self.critics[critic_index](x=ob)
         val = val.squeeze(-1)
         return val
 
@@ -191,6 +206,48 @@ class DeepExplorationAgent(BaseAgent):
         optim_info['grad_norm'] = grad_norm
         return optim_info
 
+    def optimize_policy(self, data):
+        # may not need the preprocessing
+        # need rewards to calculate advantages
+        pre_res = self.optim_preprocess(data)
+        processed_data = pre_res
+        processed_data['entropy'] = torch.mean(processed_data['entropy'])
+        loss_res = self.cal_loss(**processed_data)
+        loss, pg_loss, vf_loss, ratio = loss_res
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
+        self.optimizer.step()
+        with torch.no_grad():
+            approx_kl = 0.5 * torch.mean(torch.pow(processed_data['old_log_prob'] -
+                                                   processed_data['log_prob'], 2))
+            clip_frac = np.mean(np.abs(torch_to_np(ratio) - 1.0) > cfg.alg.clip_range)
+        optim_info = dict(
+            pg_loss=pg_loss.item(),
+            vf_loss=vf_loss.item(),
+            total_loss=loss.item(),
+            entropy=processed_data['entropy'].item(),
+            approx_kl=approx_kl.item(),
+            clip_frac=clip_frac
+        )
+        optim_info['grad_norm'] = grad_norm
+
+    def compute_advantage_gae(self, values, rewards, device=None):
+        # values should be average values from the K-ensemble of critics
+        advantages = torch.zeros_like(values, device=device)
+
+        #### TODO: populate GAE in advantages over T timesteps (10 pts) ############
+
+        # we do not have a future value for the last timestep
+        for t in range(len(rewards) - 2, -1, -1):
+            gae = rewards[t] + discount * values[t + 1] - values[t]
+            advantages[t] = gae + self.gae_lambda * self.discount * (advantages[t + 1])
+
+        ############################################################################
+
+        return advantages[:self.T]
+
     def optim_preprocess(self, data):
         self.train_mode()
         for key, val in data.items():
@@ -199,22 +256,19 @@ class DeepExplorationAgent(BaseAgent):
         action = data['action']
         ret = data['ret']
         adv = data['adv']
-        old_log_prob = data['log_prob']
         old_val = data['val']
 
-        act_dist, val = self.get_act_val(ob)
+        act_dist, val,  = self.get_act_val(ob)
         log_prob = action_log_prob(action, act_dist)
-        entropy = action_entropy(act_dist, log_prob)
+        # entropy = action_entropy(act_dist, log_prob)
         if not all([x.ndim == 1 for x in [val, entropy, log_prob]]):
             raise ValueError('val, entropy, log_prob should be 1-dim!')
         processed_data = dict(
             val=val,
-            old_val=old_val,
             ret=ret,
             log_prob=log_prob,
-            old_log_prob=old_log_prob,
             adv=adv,
-            entropy=entropy
+
         )
         return processed_data
 
