@@ -79,7 +79,7 @@ class DeepExplorationAgent(BaseAgent):
         else:
             optim_args['params'] = [{'params': self.actor.parameters(),
                                      'lr': cfg.alg.policy_lr},
-                                    {'params': self.critic.parameters(),
+                                    {'params': self.critics[0].parameters(), #TODO: fix critic params
                                      'lr': cfg.alg.value_lr}]
 
         self.optimizer = optim_func(**optim_args)

@@ -13,7 +13,7 @@ from easyrl.utils.common import save_traj
 from deepexploration.utils import run_inference
 from deepexploration.utils import eval_agent
 from typing import Any
-
+import airobot as ar
 
 class TrajDataset(Dataset):
     def __init__(self, trajs, sample_percent=.9):
@@ -55,12 +55,11 @@ class TrajDataset(Dataset):
         return
 
 
-
 ## Sample from homework>
 def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, disable_tqdm=True):
     dataset = TrajDataset(trajs)
 
-    #TODO: override DataLoader default behavior to sample randomly with replacement from the dataset
+    # TODO: override DataLoader default behavior to sample randomly with replacement from the dataset
     dataloader = DataLoader(dataset,
                             batch_size=batch_size,
                             shuffle=True)
@@ -90,6 +89,7 @@ def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, dis
         logs['epoch'].append(iter)
     return agent, logs, len(dataset)
 
+
 def eval_agent(agent, env, num_trials, disable_tqdm=False, render=False):
     trajs = run_inference(agent, env, num_trials, return_on_done=True,
                           disable_tqdm=disable_tqdm, render=render)
@@ -110,6 +110,7 @@ def eval_agent(agent, env, num_trials, disable_tqdm=False, render=False):
     ret_std = np.std(rets)
     success_rate = np.mean(successes)
     return success_rate, ret_mean, ret_std, rets, successes
+
 
 @dataclass
 class DeepExplorationEngine:
@@ -279,7 +280,6 @@ class DeepExplorationEngine:
         trajs = torch.vstack(trajs)
         return trajs, elapsed_time
 
-
     def traj_preprocess(self, trajs):
         action_infos = traj.action_infos
         vals = np.array([ainfo['val'] for ainfo in action_infos])
@@ -303,16 +303,15 @@ class DeepExplorationEngine:
                                         shuffle=True)
         return rollout_dataloader
 
-
-        def cal_advantages(self, traj):
-            rewards = traj.rewards
-            action_infos = traj.action_infos
-            vals = np.array([ainfo['val'] for ainfo in action_infos])
-            last_val = traj.extra_data['last_val']
-            adv = cal_gae(gamma=cfg.alg.rew_discount,
-                          lam=cfg.alg.gae_lambda,
-                          rewards=rewards,
-                          value_estimates=vals,
-                          last_value=last_val,
-                          dones=traj.dones)
-            return adv
+    def cal_advantages(self, traj):
+        rewards = traj.rewards
+        action_infos = traj.action_infos
+        vals = np.array([ainfo['val'] for ainfo in action_infos])
+        last_val = traj.extra_data['last_val']
+        adv = cal_gae(gamma=cfg.alg.rew_discount,
+                      lam=cfg.alg.gae_lambda,
+                      rewards=rewards,
+                      value_estimates=vals,
+                      last_value=last_val,
+                      dones=traj.dones)
+        return adv
