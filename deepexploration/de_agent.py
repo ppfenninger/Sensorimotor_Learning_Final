@@ -321,6 +321,7 @@ class DeepExplorationAgent(BaseAgent):
             print(f'{name}: {param.requires_grad}')
 
 class ACModel(nn.Module):
+    #TODO: not a good model because it's for the discrete key env, need a architecture for pusher env 
 
     def __init__(self, num_actions, use_critic=False, num_critics=10, deep_exploration_enabled=True):
         super().__init__()

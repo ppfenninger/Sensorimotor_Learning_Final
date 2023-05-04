@@ -328,7 +328,7 @@ class DeepExplorationEngine:
         optim_infos = []
         for oe in range(cfg.alg.opt_epochs):
             for batch_ndx, batch_data in enumerate(rollout_dataloader):
-                optim_info = self.agent.optimize_value_function(batch_data)
+                optim_info = self.agent.git p(batch_data)
                 optim_infos.append(optim_info)
         return optim_infos
 
