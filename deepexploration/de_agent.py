@@ -32,7 +32,7 @@ class DeepExplorationAgent(BaseAgent):
     critics: List[nn.Module]
     same_body: float = False
     is_in_exploration_mode = False
-    exploration_horizon = 1000
+    exploration_horizon = 5
     exploration_steps = 0
     beta = 0.1
     epsilon = 0.2

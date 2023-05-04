@@ -89,7 +89,7 @@ class DeepExplorationRunner(BasicRunner):
                     candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
                     candidate_scores = np.array([candidate_score.numpy() for candidate_score in candidate_scores])
 
-                    action, action_info = candidate_actions[np.random.choice(np.arange(len(candidate_actions)),
+                    action = candidate_actions[np.random.choice(np.arange(len(candidate_actions)),
                                                                              1,  # choose 1 action proportional to score
                                                                              p=candidate_scores / sum(
                                                                                  candidate_scores))[0]]
@@ -113,7 +113,6 @@ class DeepExplorationRunner(BasicRunner):
                 for img, inf in zip(imgs, info):
                     inf['render_image'] = deepcopy(img)
 
-            print("info", info)
             true_next_ob, true_done, all_dones = self.get_true_done_next_ob(next_ob,
                                                                             done,
                                                                             reward,
