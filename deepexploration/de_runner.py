@@ -82,16 +82,17 @@ class DeepExplorationRunner(BasicRunner):
                     candidate_actions = self.agent.get_candidate_actions(ob, sample=sample, **action_kwargs)
 
                     # TODO: Is this step super expensive?
-                    new_env = deepcopy(env)
-                    next_states_from_candidate_actions = [new_env.step(candidate_action[0])[0]
+                    next_states_from_candidate_actions = [env.simulate_step(action=candidate_action)[0]
                                                           for candidate_action in candidate_actions]
 
                     # Calculated as average critic value plus exploration bonus (beta times std of critic values)
                     candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
+                    candidate_scores = np.array([candidate_score.numpy() for candidate_score in candidate_scores])
 
-                    action, action_info = np.random.choice(candidate_actions,
-                                                           1,  # choose 1 action proportional to score
-                                                           p=candidate_scores / sum(candidate_scores))[0]
+                    action, action_info = candidate_actions[np.random.choice(np.arange(len(candidate_actions)),
+                                                                             1,  # choose 1 action proportional to score
+                                                                             p=candidate_scores / sum(
+                                                                                 candidate_scores))[0]]
                     self.agent.exploration_steps += 1
 
                     if self.agent.exploration_steps >= self.agent.exploration_horizon:
@@ -112,10 +113,11 @@ class DeepExplorationRunner(BasicRunner):
                 for img, inf in zip(imgs, info):
                     inf['render_image'] = deepcopy(img)
 
+            print("info", info)
             true_next_ob, true_done, all_dones = self.get_true_done_next_ob(next_ob,
                                                                             done,
                                                                             reward,
-                                                                            info,
+                                                                            [info],  # TODO figure out info
                                                                             all_dones,
                                                                             skip_record=evaluation)
             sd = StepData(ob=ob,

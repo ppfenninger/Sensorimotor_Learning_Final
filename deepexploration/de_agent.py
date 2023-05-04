@@ -124,7 +124,7 @@ class DeepExplorationAgent(BaseAgent):
          model based RL.'''
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
-        act_dist, avg_val, std_val = self.get_act_val_ensemble(t_ob)
+        act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(t_ob)
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
         return candidate_actions
 
@@ -167,7 +167,7 @@ class DeepExplorationAgent(BaseAgent):
         '''Returns the action distribution, the average value of the critics, and
         the std of the critics'''
         act_dist, vals = self.get_act_vals_from_ensemble(ob, *args, **kwargs)
-        return act_dist, np.mean(vals), np.std(vals)
+        return act_dist, torch.mean(vals), torch.std(vals)
 
     @torch.no_grad()
     def get_act_vals_from_ensemble(self, ob, *args, **kwargs):

@@ -4,3 +4,5 @@ easyrl~=0.0.1
 ipython~=8.13.1
 setuptools~=65.5.1
 torch~=2.0.0
+gym~=0.26.2
+airobot~=0.1
