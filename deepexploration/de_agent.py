@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.distributions import Categorical
 from torch.optim.lr_scheduler import LambdaLR
 
 from easyrl.agents.base_agent import BaseAgent
@@ -31,7 +32,7 @@ class DeepExplorationAgent(BaseAgent):
     critics: List[nn.Module]
     same_body: float = False
     is_in_exploration_mode = False
-    exploration_horizon = 1000
+    exploration_horizon = 5
     exploration_steps = 0
     beta = 0.1
     epsilon = 0.2
@@ -83,7 +84,7 @@ class DeepExplorationAgent(BaseAgent):
         else:
             optim_args['params'] = [{'params': self.actor.parameters(),
                                      'lr': cfg.alg.policy_lr},
-                                    {'params': self.critic.parameters(),
+                                    {'params': self.critics[0].parameters(), #TODO: fix critics
                                      'lr': cfg.alg.value_lr}]
 
         self.optimizer = optim_func(**optim_args)
@@ -123,7 +124,7 @@ class DeepExplorationAgent(BaseAgent):
          model based RL.'''
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
-        act_dist, avg_val, std_val = self.get_act_val(t_ob)
+        act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(t_ob)
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
         return candidate_actions
 
@@ -166,8 +167,8 @@ class DeepExplorationAgent(BaseAgent):
         '''Returns the action distribution, the average value of the critics, and
         the std of the critics'''
         act_dist, vals = self.get_act_vals_from_ensemble(ob, *args, **kwargs)
-        return act_dist, np.mean(vals), np.std(vals)
-    
+        return act_dist, torch.mean(vals), torch.std(vals)
+
     @torch.no_grad()
     def get_act_vals_from_ensemble(self, ob, *args, **kwargs):
         '''Returns the action distribution and values from all the critics'''
@@ -197,7 +198,7 @@ class DeepExplorationAgent(BaseAgent):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        
+
         optim_info = dict(
             pg_loss=pg_loss.item(),
             vf_loss=vf_loss.item(),
@@ -205,7 +206,7 @@ class DeepExplorationAgent(BaseAgent):
             entropy=processed_data['entropy'].item(),
         )
         return optim_info
-    
+
     def optimize_value_function(self, data):
         pre_res = self.optim_preprocess(data)
         processed_data = pre_res
@@ -213,7 +214,7 @@ class DeepExplorationAgent(BaseAgent):
         # self.optimizer.zero_grad()
         # loss.backward()
         # self.optimizer.step()
-        
+
         optim_info = dict(
             pg_loss=pg_loss.item(),
             vf_loss=vf_loss.item(),
@@ -235,7 +236,7 @@ class DeepExplorationAgent(BaseAgent):
 
         act_dist, vals  = self.get_act_vals_from_ensemble(ob, return_vals=True)
         log_prob = action_log_prob(action, act_dist)
-        # entropy = action_entropy(act_dist, log_prob)
+        entropy = action_entropy(act_dist, log_prob)
         if not all([x.ndim == 1 for x in [log_prob, vals[0]]]):
             raise ValueError('val, log_prob should be 1-dim!')
         processed_data = dict(
@@ -255,16 +256,18 @@ class DeepExplorationAgent(BaseAgent):
         return loss, vf_loss
 
     def cal_val_loss(self, val, ret):
-        vf_loss = F.mse_loss( val, ret )  
+        vf_loss = F.mse_loss( val, ret )
         return vf_loss
 
     def train_mode(self):
         self.actor.train()
-        self.critic.train()
+        for critic in self.critics:
+            critic.train()
 
     def eval_mode(self): #doesn't collect gradients
         self.actor.eval()
-        self.critic.eval()
+        for critic in self.critics:
+            critic.eval()
 
     def decay_lr(self):
         self.lr_scheduler.step()
@@ -284,10 +287,12 @@ class DeepExplorationAgent(BaseAgent):
         data_to_save = {
             'step': step,
             'actor_state_dict': self.actor.state_dict(),
-            'critic_state_dict': self.critic.state_dict(),
             'optim_state_dict': self.optimizer.state_dict(),
             'lr_scheduler_state_dict': self.lr_scheduler.state_dict()
         }
+
+        for i, module in enumerate(self.critics):
+            data_to_save[f'critic_state_dict_{i}'] = module.state_dict()
 
         if cfg.alg.linear_decay_clip_range:
             data_to_save['clip_range'] = cfg.alg.clip_range
@@ -300,8 +305,9 @@ class DeepExplorationAgent(BaseAgent):
                                    pretrain_model=pretrain_model)
         load_state_dict(self.actor,
                         ckpt_data['actor_state_dict'])
-        load_state_dict(self.critic,
-                        ckpt_data['critic_state_dict'])
+        for i, critic in enumerate(self.critics):
+            load_state_dict(critic,
+                            ckpt_data[f'critic_state_dict_{i}'])
         if pretrain_model is not None:
             return
         self.optimizer.load_state_dict(ckpt_data['optim_state_dict'])
@@ -317,7 +323,7 @@ class DeepExplorationAgent(BaseAgent):
         for name, param in self.actor.named_parameters():
             print(f'{name}: {param.requires_grad}')
         logger.info('================== Critic ================== ')
-        for name, param in self.critic.named_parameters():
+        for name, param in self.critics[0].named_parameters(): #TODO fix critics
             print(f'{name}: {param.requires_grad}')
 
 class ACModel(nn.Module):
@@ -367,7 +373,7 @@ class ACModel(nn.Module):
                 self.critics.append(critic)
 
         # Initialize parameters correctly
-        # TODO: find out what init_params were in the homework 
+        # TODO: find out what init_params were in the homework
         self.apply(init_params)
 
     def forward(self, obs):

@@ -69,31 +69,36 @@ class DeepExplorationRunner(BasicRunner):
                                                             **action_kwargs)
             elif not random_action and exploration_enabled:
                 # Samples from policy, explores
+                if not self.agent.is_in_exploration_mode:
+                    if np.random.rand() < self.agent.epsilon:
+                        print("entering exploration more")
+                        self.agent.is_in_exploration_mode = True
+                        self.agent.exploration_steps = 0
+                    else:
+                        action, action_info = self.agent.get_action(ob, sample=sample, **action_kwargs)
 
                 if self.agent.is_in_exploration_mode:
-                    if self.agent.exploration_steps < self.agent.exploration_horizon:
+                    # candidate_actions is a list of (action, action_info) tuples
+                    candidate_actions = self.agent.get_candidate_actions(ob, sample=sample, **action_kwargs)
 
-                        # candidate_actions is a list of (action, action_info) tuples
-                        candidate_actions = self.agent.get_candidate_actions(ob, sample=sample, **action_kwargs)
+                    # TODO: Is this step super expensive?
+                    next_states_from_candidate_actions = [env.simulate_step(action=candidate_action)[0]
+                                                          for candidate_action in candidate_actions]
 
-                        # TODO: Is this step super expensive?
-                        next_states_from_candidate_actions = [deepcopy(env).step(candidate_action[0])[0]
-                                                              for candidate_action in candidate_actions]
+                    # Calculated as average critic value plus exploration bonus (beta times std of critic values)
+                    candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
+                    candidate_scores = np.array([candidate_score.numpy() for candidate_score in candidate_scores])
 
-                        # Calculated as average critic value plus exploration bonus (beta times std of critic values)
-                        candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
+                    action = candidate_actions[np.random.choice(np.arange(len(candidate_actions)),
+                                                                             1,  # choose 1 action proportional to score
+                                                                             p=candidate_scores / sum(
+                                                                                 candidate_scores))[0]]
+                    self.agent.exploration_steps += 1
 
-                        action, action_info = np.random.choice(candidate_actions,
-                                                               1,  # choose 1 action proportional to score
-                                                               p=candidate_scores / sum(candidate_scores))[0]
-                        self.agent.exploration_steps += 1
-
-                    else:
-                        # We have finished exploring, so we turn off exploration mode
+                    if self.agent.exploration_steps >= self.agent.exploration_horizon:
+                        print("exiting exploration more")
                         self.agent.is_in_exploration_mode = False
-
-                if not self.agent.is_in_exploration_mode:
-                    action, action_info = self.agent.get_action(ob, sample=sample, **action_kwargs)
+                        self.agent.exploration_steps = 0
 
             else:
                 raise ValueError('random_action and exploration_enabled combined is currently unsupported')
@@ -111,7 +116,7 @@ class DeepExplorationRunner(BasicRunner):
             true_next_ob, true_done, all_dones = self.get_true_done_next_ob(next_ob,
                                                                             done,
                                                                             reward,
-                                                                            info,
+                                                                            [info],  # TODO figure out info
                                                                             all_dones,
                                                                             skip_record=evaluation)
             sd = StepData(ob=ob,
