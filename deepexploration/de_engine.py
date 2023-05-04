@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data import Subset
+import torch.nn.functional as F
+from easyrl.utils.gae import cal_gae, cal_gae_torch
 import numpy as np
 import torch
 import torch.optim as optim
@@ -16,29 +18,41 @@ from typing import Any
 
 
 class TrajDataset(Dataset):
-    def __init__(self, trajs, sample_percent=.9):
+    def __init__(self, trajs):
         states = []
         actions = []
         values = []
+        advantages = []
+        returns = []
+        log_probs = []
 
         for traj in trajs:
-            states.append(traj.obs)
-            actions.append(traj.actions)
+            
+            obs, a, adv, ret, log_prob, val = self.traj_preprocess(traj)
+            states.append(obs)
+            actions.append(a)
+            values.append(val)
+            log_probs.append(log_prob)
+            returns.append(ret)
+            advantages.append(adv)
 
-        # sample a fraction of the dataset
-        # rand_indices = np.random.choice(len(states), size=np.floor(states*sample_percent))
-        # self.states = np.concatenate([states[i] for i in rand_indices], axis=0)
-        # self.actions = np.concatenate([actions[i] for i in rand_indices], axis=0
-        self.states = np.concatenate(states, axis=0)
-        self.actions = np.concatenate(actions, axis=0)
+        self.data = {
+            "ob": np.concatenate(states, axis=0),
+            "action": np.concatenate(actions, axis=0),
+            "val": np.concatenate(values, axis=0), 
+            "adv": np.concatenate(advantages, axis=0),
+            "ret": np.concatenate(returns, axis=0), 
+            "log_prob": np.concatenate(log_probs, axis=0)
+        }
+
 
     def __len__(self):
         return self.states.shape[0]
 
     def __getitem__(self, idx):
         sample = dict()
-        sample['state'] = self.states[idx]
-        sample['action'] = self.actions[idx]
+        for key in self.data: 
+            sample[key] = self.data[key][idx]
         return sample
 
     def add_traj(self, traj=None, states=None, actions=None):
@@ -49,10 +63,59 @@ class TrajDataset(Dataset):
             self.states = np.concatenate((self.states, states), axis=0)
             self.actions = np.concatenate((self.actions, actions), axis=0)
 
-    def get_sample(self, sample_ratio=.9):
-        dataset_size = len(self.states)
-        rand_indices = np.random.choice(dataset_size, size=np.floor(dataset_size * sample_ratio))
-        return
+    def traj_preprocess(self, traj):
+        action_infos = traj.action_infos
+        vals = np.array([ainfo['val'] for ainfo in action_infos])
+        log_prob = np.array([ainfo['log_prob'] for ainfo in action_infos])
+        adv = self.cal_advantages(traj)
+        #TODO returns may not be discounted? 
+        ret = adv + vals
+        if cfg.alg.normalize_adv:
+            adv = adv.astype(np.float64)
+            adv = (adv - np.mean(adv)) / (np.std(adv) + 1e-8)
+        # data = dict(
+        #     # ob=traj.obs,
+        #     # action=traj.actions,
+        #     ret=ret,
+        #     adv=adv,
+        #     log_prob=log_prob,
+        #     val=vals
+        # )
+
+        return traj.obs, traj.actions, adv, ret, log_prob, vals
+
+    #TODO migrate one of the cal_advantages? 
+
+    def cal_advantages(self, traj):
+        rewards = traj.rewards
+        action_infos = traj.action_infos
+        vals = np.array([ainfo['val'] for ainfo in action_infos])
+        last_val = traj.extra_data['last_val']
+        # there's also a torch version if necessary. 
+        adv = cal_gae_torch(gamma=cfg.alg.rew_discount,
+                        lam=cfg.alg.gae_lambda,
+                        rewards=rewards,
+                        value_estimates=vals,
+                        last_value=last_val,
+                        dones=traj.dones)
+        return adv
+
+    # from homework, probably will not use 
+    def compute_advantage_gae(self, values, rewards, device=None):
+        # values should be average values from the K-ensemble of critics
+        advantages = torch.zeros_like(values, device=device)
+
+        #### TODO: populate GAE in advantages over T timesteps (10 pts) ############
+
+        # we do not have a future value for the last timestep
+        for t in range(len(rewards) - 2, -1, -1):
+            gae = rewards[t] + self.agent.discount * values[t + 1] - values[t]
+            advantages[t] = gae + self.agent.gae_lambda * self.agent.discount * (advantages[t + 1])
+
+        ############################################################################
+
+        return advantages[:self.agent.T]
+
 
 
 
@@ -149,8 +212,8 @@ class DeepExplorationEngine:
                 eval_log_info = None
             # rollout the current policy and get a trajectory
             # TODO: rollout multiple trajectories
-            # TODO: make num_traj exist somehow, add to config???
-            trajs, rollout_time = self.rollout_batch(num_traj, sample=True,
+            # TODO: make num_traj exist somehow, add to config??? whatever this cfg.alg is 
+            trajs, rollout_time = self.rollout_batch(cfg.alg.num_traj, sample=True,
                                                      get_last_val=True,
                                                      time_steps=cfg.alg.episode_steps)
 
@@ -164,7 +227,7 @@ class DeepExplorationEngine:
                         train_log_info.update(eval_log_info)
                     if cfg.alg.linear_decay_lr:
                         train_log_info.update(self.agent.get_lr())
-                    if cfg.alg.linear_decay_clip_range:s
+                    if cfg.alg.linear_decay_clip_range:
                         train_log_info.update(dict(clip_range=cfg.alg.clip_range))
                     scalar_log = {'scalar': train_log_info}
                     self.tf_logger.save_dict(scalar_log, step=self.cur_step)
@@ -233,12 +296,13 @@ class DeepExplorationEngine:
 
     def train_batch(self, trajs, sample_percent=.9):
         # TODO: figure out how to calculate steps
-        self.cur_step += torch.sum([[traj].total_steps for traj in trajs])
-        self.dataset = TrajDataset(trajs, sample_percent=sample_percent)
+        self.cur_step += torch.sum([traj.total_steps for traj in trajs])
+        #moved preprocessing to inside the TrajDataset 
+        self.dataset = TrajDataset(trajs)
 
         # TODO make sure we can iterate through the critics
         for critic in self.agent.critic:
-            critic_optim_info = self.agent.train_critic(trajs, critic)
+            critic_optim_info = self.train_critic(trajs, critic)
             # consider logging critic optim info later?
 
         # TODO - ensure this optimizing is just for the actor, not value function
@@ -266,7 +330,7 @@ class DeepExplorationEngine:
             for batch_ndx, batch_data in enumerate(rollout_dataloader):
                 optim_info = self.agent.optimize_value_function(batch_data)
                 optim_infos.append(optim_info)
-        return optim_info
+        return optim_infos
 
     def rollout_batch(self, num_trajs, **kwargs):
         t0 = time.perf_counter()
@@ -279,40 +343,10 @@ class DeepExplorationEngine:
         # trajs = torch.vstack(trajs)
         return trajs, elapsed_time
 
-
-    def traj_preprocess(self, trajs):
-        action_infos = traj.action_infos
-        vals = np.array([ainfo['val'] for ainfo in action_infos])
-        log_prob = np.array([ainfo['log_prob'] for ainfo in action_infos])
-        adv = self.cal_advantages(traj)
-        ret = adv + vals
-        if cfg.alg.normalize_adv:
-            adv = adv.astype(np.float64)
-            adv = (adv - np.mean(adv)) / (np.std(adv) + 1e-8)
-        data = dict(
-            ob=traj.obs,
-            action=traj.actions,
-            ret=ret,
-            adv=adv,
-            log_prob=log_prob,
-            val=vals
-        )
-        rollout_dataset = EpisodeDataset(**data)
-        rollout_dataloader = DataLoader(rollout_dataset,
-                                        batch_size=cfg.alg.batch_size,
-                                        shuffle=True)
-        return rollout_dataloader
-
-
-        def cal_advantages(self, traj):
-            rewards = traj.rewards
-            action_infos = traj.action_infos
-            vals = np.array([ainfo['val'] for ainfo in action_infos])
-            last_val = traj.extra_data['last_val']
-            adv = cal_gae(gamma=cfg.alg.rew_discount,
-                          lam=cfg.alg.gae_lambda,
-                          rewards=rewards,
-                          value_estimates=vals,
-                          last_value=last_val,
-                          dones=traj.dones)
-            return adv
+    def rollout_once(self, *args, **kwargs):
+        t0 = time.perf_counter()
+        self.agent.eval_mode()
+        traj = self.runner(**kwargs)
+        t1 = time.perf_counter()
+        elapsed_time = t1 - t0
+        return traj, elapsed_time

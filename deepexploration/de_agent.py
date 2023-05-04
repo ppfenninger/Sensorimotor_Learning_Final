@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 
 from easyrl.agents.base_agent import BaseAgent
@@ -136,7 +137,7 @@ class DeepExplorationAgent(BaseAgent):
         avg_values = []
         std_values = []
         for next_state in next_states_from_candidate_actions:
-            act_dist, avg_val, std_val = self.get_act_val_ensemble(next_state)
+            act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(next_state)
             avg_values.append(avg_val)
             std_values.append(std_val)
 
@@ -147,7 +148,7 @@ class DeepExplorationAgent(BaseAgent):
     def get_action(self, ob, sample=True, *args, **kwargs):
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
-        act_dist, avg_val, std_val = self.get_act_val_ensemble(t_ob)
+        act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(t_ob)
         action = action_from_dist(act_dist,
                                   sample=sample)
         log_prob = action_log_prob(action, act_dist)
@@ -160,17 +161,23 @@ class DeepExplorationAgent(BaseAgent):
 
         return torch_to_np(action), action_info
 
-    def get_act_val_ensemble(self, ob, *args, **kwargs):
+    @torch.no_grad()
+    def get_act_val_ensemble_stats(self, ob, *args, **kwargs):
         '''Returns the action distribution, the average value of the critics, and
         the std of the critics'''
+        act_dist, vals = self.get_act_vals_from_ensemble(ob, *args, **kwargs)
+        return act_dist, np.mean(vals), np.std(vals)
+    
+    @torch.no_grad()
+    def get_act_vals_from_ensemble(self, ob, *args, **kwargs):
+        '''Returns the action distribution and values from all the critics'''
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
-        # TODO: modify to torch version instead of numpy
-        vals = np.array([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
-        return act_dist, np.mean(vals), np.std(vals)
+        vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
+        return act_dist, vals
 
     @torch.no_grad()
-    def get_val(self, ob, critic_index, *args, **kwargs):
+    def get_act_val(self, ob, critic_index, *args, **kwargs):
         '''
         Returns the value of the critic at critic_index predicts for ob
         '''
@@ -180,73 +187,41 @@ class DeepExplorationAgent(BaseAgent):
         val = val.squeeze(-1)
         return val
 
-    def optimize(self, data, *args, **kwargs):
+    def optimize_policy(self, data):
         pre_res = self.optim_preprocess(data)
         processed_data = pre_res
-        processed_data['entropy'] = torch.mean(processed_data['entropy'])
-        loss_res = self.cal_loss(**processed_data)
+        # processed_data['entropy'] = torch.mean(processed_data['entropy'])
+
+        loss_res = self.cal_policy_loss(**processed_data)
         loss, pg_loss, vf_loss, ratio = loss_res
         self.optimizer.zero_grad()
         loss.backward()
-
-        grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
         self.optimizer.step()
-        with torch.no_grad():
-            approx_kl = 0.5 * torch.mean(torch.pow(processed_data['old_log_prob'] -
-                                                   processed_data['log_prob'], 2))
-            clip_frac = np.mean(np.abs(torch_to_np(ratio) - 1.0) > cfg.alg.clip_range)
+        
         optim_info = dict(
             pg_loss=pg_loss.item(),
             vf_loss=vf_loss.item(),
             total_loss=loss.item(),
             entropy=processed_data['entropy'].item(),
-            approx_kl=approx_kl.item(),
-            clip_frac=clip_frac
         )
-        optim_info['grad_norm'] = grad_norm
+        return optim_info
+    
+    def optimize_value_function(self, data):
+        pre_res = self.optim_preprocess(data)
+        processed_data = pre_res
+        value_loss = self.cal_val_loss(**processed_data)
+        # self.optimizer.zero_grad()
+        # loss.backward()
+        # self.optimizer.step()
+        
+        optim_info = dict(
+            pg_loss=pg_loss.item(),
+            vf_loss=vf_loss.item(),
+            total_loss=loss.item(),
+            entropy=processed_data['entropy'].item(),
+        )
         return optim_info
 
-    def optimize_policy(self, data):
-        # may not need the preprocessing
-        # need rewards to calculate advantages
-        pre_res = self.optim_preprocess(data)
-        processed_data = pre_res
-        processed_data['entropy'] = torch.mean(processed_data['entropy'])
-        loss_res = self.cal_loss(**processed_data)
-        loss, pg_loss, vf_loss, ratio = loss_res
-        self.optimizer.zero_grad()
-        loss.backward()
-
-        grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
-        self.optimizer.step()
-        with torch.no_grad():
-            approx_kl = 0.5 * torch.mean(torch.pow(processed_data['old_log_prob'] -
-                                                   processed_data['log_prob'], 2))
-            clip_frac = np.mean(np.abs(torch_to_np(ratio) - 1.0) > cfg.alg.clip_range)
-        optim_info = dict(
-            pg_loss=pg_loss.item(),
-            vf_loss=vf_loss.item(),
-            total_loss=loss.item(),
-            entropy=processed_data['entropy'].item(),
-            approx_kl=approx_kl.item(),
-            clip_frac=clip_frac
-        )
-        optim_info['grad_norm'] = grad_norm
-
-    def compute_advantage_gae(self, values, rewards, device=None):
-        # values should be average values from the K-ensemble of critics
-        advantages = torch.zeros_like(values, device=device)
-
-        #### TODO: populate GAE in advantages over T timesteps (10 pts) ############
-
-        # we do not have a future value for the last timestep
-        for t in range(len(rewards) - 2, -1, -1):
-            gae = rewards[t] + discount * values[t + 1] - values[t]
-            advantages[t] = gae + self.gae_lambda * self.discount * (advantages[t + 1])
-
-        ############################################################################
-
-        return advantages[:self.T]
 
     def optim_preprocess(self, data):
         self.train_mode()
@@ -256,15 +231,15 @@ class DeepExplorationAgent(BaseAgent):
         action = data['action']
         ret = data['ret']
         adv = data['adv']
-        old_val = data['val']
+        # old_val = data['val']
 
-        act_dist, val,  = self.get_act_val(ob)
+        act_dist, vals  = self.get_act_vals_from_ensemble(ob, return_vals=True)
         log_prob = action_log_prob(action, act_dist)
         # entropy = action_entropy(act_dist, log_prob)
-        if not all([x.ndim == 1 for x in [val, entropy, log_prob]]):
-            raise ValueError('val, entropy, log_prob should be 1-dim!')
+        if not all([x.ndim == 1 for x in [log_prob, vals[0]]]):
+            raise ValueError('val, log_prob should be 1-dim!')
         processed_data = dict(
-            val=val,
+            vals=vals,
             ret=ret,
             log_prob=log_prob,
             adv=adv,
@@ -272,31 +247,15 @@ class DeepExplorationAgent(BaseAgent):
         )
         return processed_data
 
-    def cal_loss(self, val, old_val, ret, log_prob, old_log_prob, adv, entropy):
-        vf_loss = self.cal_val_loss(val=val, old_val=old_val, ret=ret)
-        ratio = torch.exp(log_prob - old_log_prob)
-        surr1 = adv * ratio
-        surr2 = adv * torch.clamp(ratio,
-                                  1 - cfg.alg.clip_range,
-                                  1 + cfg.alg.clip_range)
-        pg_loss = -torch.mean(torch.min(surr1, surr2))
+    def cal_policy_loss(self, val, ret, log_prob, adv):
 
-        loss = pg_loss - entropy * cfg.alg.ent_coef + \
+        vf_loss = self.cal_val_loss(val=val, ret=ret)
+        loss = -torch.mean(log_prob*adv, axis=-1) + \
                vf_loss * cfg.alg.vf_coef
-        return loss, pg_loss, vf_loss, ratio
+        return loss, vf_loss
 
-    def cal_val_loss(self, val, old_val, ret):
-        if cfg.alg.clip_vf_loss:
-            clipped_val = old_val + torch.clamp(val - old_val,
-                                                -cfg.alg.clip_range,
-                                                cfg.alg.clip_range)
-            vf_loss1 = torch.pow(val - ret, 2)
-            vf_loss2 = torch.pow(clipped_val - ret, 2)
-            vf_loss = 0.5 * torch.mean(torch.max(vf_loss1,
-                                                 vf_loss2))
-        else:
-            # val = torch.squeeze(val)
-            vf_loss = 0.5 * self.val_loss_criterion(val, ret)
+    def cal_val_loss(self, val, ret):
+        vf_loss = F.mse_loss( val, ret )  
         return vf_loss
 
     def train_mode(self):
@@ -363,9 +322,10 @@ class DeepExplorationAgent(BaseAgent):
 
 class ACModel(nn.Module):
 
-    def __init__(self, num_actions, use_critic=False, deep_exploration_enabled=True):
+    def __init__(self, num_actions, use_critic=False, num_critics=10, deep_exploration_enabled=True):
         super().__init__()
         self.use_critic = use_critic
+        self.num_critics = num_critics
         self.deep_exploration_enabled =  deep_exploration_enabled
 
         # Define actor's model
@@ -395,13 +355,18 @@ class ACModel(nn.Module):
                 nn.Conv2d(32, 64, (2, 2)),
                 nn.ReLU()
             )
-            self.critic = nn.Sequential(
-                nn.Linear(64, 64),
-                nn.Tanh(),
-                nn.Linear(64, 1)
-            )
+            self.critics = []
+            for i in range(self.num_critics):
+                critic = nn.Sequential(
+                    nn.Linear(64, 64),
+                    nn.Tanh(),
+                    nn.Linear(64, 1)
+                )
+
+                self.critics.append(critic)
 
         # Initialize parameters correctly
+        # TODO: find out what init_params were in the homework 
         self.apply(init_params)
 
     def forward(self, obs):
