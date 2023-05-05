@@ -37,9 +37,8 @@ class DeepExplorationAgent(BaseAgent):
     beta = 0.1
     epsilon = 0.2
     k_samples = 10
-    gae_lambda = .5
-    discount = .9
-    T = 5000
+    gae_lambda = .5 #will need to move to config 
+    discount = .9 #will need to move to config 
 
     def __post_init__(self):
         move_to([self.actor] + self.critics,
@@ -97,22 +96,6 @@ class DeepExplorationAgent(BaseAgent):
                                   total_epochs=total_epochs)
             self.lr_scheduler = LambdaLR(optimizer=self.optimizer,
                                          lr_lambda=[p_lr_lambda, v_lr_lambda])
-
-    # @torch.no_grad()
-    # def get_action(self, ob, sample=True, *args, **kwargs):
-    #     self.eval_mode()
-    #     t_ob = torch_float(ob, device=cfg.alg.device)
-    #     act_dist, val = self.get_act_val(t_ob)
-    #     action = action_from_dist(act_dist,
-    #                               sample=sample)
-    #     log_prob = action_log_prob(action, act_dist)
-    #     entropy = action_entropy(act_dist, log_prob)
-    #     action_info = dict(
-    #         log_prob=torch_to_np(log_prob),
-    #         entropy=torch_to_np(entropy),
-    #         val=torch_to_np(val)
-    #     )
-    #     return torch_to_np(action), action_info
 
     @torch.no_grad()
     def get_candidate_actions(self, ob, sample=True, *args, **kwargs):
@@ -174,7 +157,8 @@ class DeepExplorationAgent(BaseAgent):
         '''Returns the action distribution and values from all the critics'''
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
-        vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
+        # vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
+        vals = torch.tensor(self.get_act_val(ob, i) for i in range(len(self.critics)))
         return act_dist, vals
 
     @torch.no_grad()
@@ -189,14 +173,13 @@ class DeepExplorationAgent(BaseAgent):
         return val
 
     def optimize(self, data, *args, **kwargs):
-        pre_res = self.optim_preprocess(data)
-        processed_data = pre_res
+        processed_data = self.optim_preprocess(data)
         
         loss, pg_loss, vf_loss = self.cal_loss(**processed_data)
         
         self.optimizer.zero_grad()
         loss.backward()
-        
+
         grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
         self.optimizer.step()
 
@@ -207,71 +190,7 @@ class DeepExplorationAgent(BaseAgent):
         )
         optim_info['grad_norm'] = grad_norm
         return optim_info
-
-#    def optimize(self, whole_dataloader, critic_dataloaders):
-#         aligned_optim_infos = []
-        
-#         for oe in range(cfg.alg.opt_epochs):
-#             self.optimizer.zero_grad()
-#             critic_optim_infos = []
-#             for critic_dataloader in critic_dataloaders:
-#                 optim_info = self.optimize_by_batches(critic_dataloader, use_policy_loss=False)
-#                 critic_optim_infos.extend(optim_info)
-
-#             optim_info = self.optimize_by_batches(whole_dataloader, use_policy_loss=True)
-#             merge_value_and_critic_info(critic_optim_infos, optim_info)
-#         return aligned_optim_infos 
-    
-    def optimize_by_batches(self, dataloader, use_policy_loss=True):
-        optim_infos = []
-        # Important debugging note 
-        # what does enumerate dataloader return? is it a batch sized bit of a traj? 
-        # do we need another loop? 
-        for batch_ndx, batch_data in enumerate(dataloader):
-
-            pre_res = self.optim_preprocess(batch_data)
-            processed_data = pre_res
-
-            if use_policy_loss:
-                loss = self.cal_policy_loss(**processed_data)
-                
-                loss.backward()
-                self.optimizer.step()
-                optim_info = dict(
-                    loss = loss.item() 
-                    # vf_loss=value_loss.item(),
-                )
-                
-            else: # value loss 
-                value_loss = self.cal_val_loss(**processed_data)
-
-
-                optim_info = dict(
-                    vf_loss=value_loss.item(),
-                )
-
-            optim_infos.append(optim_info)
-
-        return optim_infos
          
-
-
-    # def optimize_value_function(self, data):
-    #     pre_res = self.optim_preprocess(data)
-    #     processed_data = pre_res
-    #     value_loss = self.cal_val_loss(**processed_data)
-    #     # self.optimizer.zero_grad()
-    #     # loss.backward()
-    #     # self.optimizer.step()
-
-    #     optim_info = dict(
-    #         pg_loss=pg_loss.item(),
-    #         vf_loss=vf_loss.item(),
-    #         total_loss=loss.item(),
-    #         entropy=processed_data['entropy'].item(),
-    #     )
-    #     return optim_info
-
 
     def optim_preprocess(self, data):
         self.train_mode()
@@ -283,13 +202,14 @@ class DeepExplorationAgent(BaseAgent):
         adv = data['adv']
         # old_val = data['val']
 
-        act_dist, vals  = self.get_act_vals_from_ensemble(ob, return_vals=True)
+        act_dist, vals  = self.get_act_vals_from_ensemble(ob)
         log_prob = action_log_prob(action, act_dist)
-        entropy = action_entropy(act_dist, log_prob)
+        # entropy = action_entropy(act_dist, log_prob)
         if not all([x.ndim == 1 for x in [log_prob, vals[0]]]):
             raise ValueError('val, log_prob should be 1-dim!')
         processed_data = dict(
-            vals=vals,
+            ob=ob,
+            vals=vals, # this is a list of vals for each critic 
             ret=ret,
             log_prob=log_prob,
             adv=adv,
@@ -297,27 +217,22 @@ class DeepExplorationAgent(BaseAgent):
         )
         return processed_data
 
-    def cal_loss(self, ob, ret, log_prob, adv):
+    def cal_loss(self, ob, vals, ret, log_prob, adv):
 
         rand_indices = np.random.choice(len(self.critics), size=np.floor(len(self.critics) * cfg.alg.sample_percent))
         # rand_indices = torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
-        vf_loss = self.cal_val_loss(ob=ob, ret=ret, critic_indices=rand_indices)
+        vf_loss = self.cal_val_loss(ob=ob, vals=vals, ret=ret)
         pg_loss = -torch.mean(log_prob*adv, axis=-1) 
         loss = pg_loss + vf_loss * cfg.alg.vf_coef
         return loss, pg_loss, vf_loss
-
     
-    def cal_policy_loss(self, val, ret, log_prob, adv):
-
-        #vf_loss = self.cal_val_loss(val=val, ret=ret)
-        loss = -torch.mean(log_prob*adv, axis=-1) 
-               # + vf_loss * cfg.alg.vf_coef
-        #return loss, vf_loss
-        return loss
-
-    def cal_val_loss(self, ob, ret, critic_indices):
+    def cal_val_loss(self, ob, vals, ret, rand_indices=True):
         # TODO check what the output of the critic actually is 
-        val = torch.mean([self.critics[i](ob) for i in critic_indices])
+        # val = torch.mean([self.critics[i](ob) for i in critic_indices])
+        ensemble_mask = 1
+        if rand_indices: 
+            ensemble_mask = torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
+        val = torch.mean(ensemble_mask*vals)
         vf_loss = F.mse_loss( val, ret )
         return vf_loss
 
