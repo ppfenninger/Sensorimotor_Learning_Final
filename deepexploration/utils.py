@@ -7,6 +7,7 @@ import torch.nn as nn
 from tqdm.notebook import tqdm
 from easyrl.configs import cfg
 from easyrl.models.diag_gaussian_policy import DiagGaussianPolicy
+from easyrl.models.value_net import ValueNet
 from easyrl.models.mlp import MLP
 from easyrl.runner.nstep_runner import EpisodicRunner
 from easyrl.utils.common import save_traj
@@ -50,16 +51,54 @@ class BasicAgent:
 def create_actor(env):
     ob_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    actor_body = MLP(input_size=ob_dim,
-                     hidden_sizes=[64],
-                     output_size=64,
-                     hidden_act=nn.Tanh,
-                     output_act=nn.Tanh)
+    actor_body = MLP(
+        input_size=ob_dim,
+        hidden_sizes=[64],
+        output_size=64,
+        hidden_act=nn.Tanh,
+        output_act=nn.Tanh
+    )
     actor = DiagGaussianPolicy(actor_body,
                                in_features=64,
                                action_dim=action_dim)
     return actor
 
+
+def create_critic(env):
+    ob_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    critic_body = MLP(
+        input_size=ob_dim,
+        hidden_sizes=[64],
+        output_size=64,
+        hidden_act=nn.Tanh,
+        output_act=nn.Tanh
+    )
+
+    critic = ValueNet(critic_body, in_features=64)
+
+    return critic
+
+
+# def initialize_critic(critic, trajs, num_epochs=10, batch_size=64, lr=1e-3):
+#     optimizer = torch.optim.Adam(critic.parameters(), lr=lr)
+#     loss_fn = nn.MSELoss()
+#     for epoch in range(num_epochs):
+#         for traj in trajs:
+#             ob = traj.obs
+#             ret = traj.raw_rewards
+#             for i in range(ob.shape[1]):
+#                 optimizer.zero_grad()
+#                 ob_i = ob[:, i, :]
+#                 ret_i = ret[:, i]
+#                 ret_i = torch_float(ret_i)
+#                 ret_i = ret_i.unsqueeze(1)
+#                 ret_i = move_to([ret_i], device=cfg.alg.device)[0]
+#                 ret_pred = critic(ob_i)
+#                 loss = loss_fn(ret_pred, ret_i)
+#                 loss.backward()
+#                 optimizer.step()
+#     return critic
 
 def load_expert_agent(env, device, expert_model_path='pusher_expert_model.pt'):
     expert_actor = create_actor(env=env)
@@ -109,3 +148,4 @@ def eval_agent(agent, env, num_trials, disable_tqdm=False, render=False):
     ret_std = np.std(rets)
     success_rate = np.mean(successes)
     return success_rate, ret_mean, ret_std, rets, successes
+
