@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import Categorical
+from torch.distributions import Categorical, 
 from torch.optim.lr_scheduler import LambdaLR
 
 from easyrl.agents.base_agent import BaseAgent
@@ -188,40 +188,89 @@ class DeepExplorationAgent(BaseAgent):
         val = val.squeeze(-1)
         return val
 
-    def optimize_policy(self, data):
+    def optimize(self, data, *args, **kwargs):
         pre_res = self.optim_preprocess(data)
         processed_data = pre_res
-        # processed_data['entropy'] = torch.mean(processed_data['entropy'])
-
-        loss_res = self.cal_policy_loss(**processed_data)
-        loss, pg_loss, vf_loss, ratio = loss_res
+        
+        loss, pg_loss, vf_loss = self.cal_loss(**processed_data)
+        
         self.optimizer.zero_grad()
         loss.backward()
+        
+        grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
         self.optimizer.step()
 
         optim_info = dict(
             pg_loss=pg_loss.item(),
             vf_loss=vf_loss.item(),
             total_loss=loss.item(),
-            entropy=processed_data['entropy'].item(),
         )
+        optim_info['grad_norm'] = grad_norm
         return optim_info
 
-    def optimize_value_function(self, data):
-        pre_res = self.optim_preprocess(data)
-        processed_data = pre_res
-        value_loss = self.cal_val_loss(**processed_data)
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # self.optimizer.step()
+#    def optimize(self, whole_dataloader, critic_dataloaders):
+#         aligned_optim_infos = []
+        
+#         for oe in range(cfg.alg.opt_epochs):
+#             self.optimizer.zero_grad()
+#             critic_optim_infos = []
+#             for critic_dataloader in critic_dataloaders:
+#                 optim_info = self.optimize_by_batches(critic_dataloader, use_policy_loss=False)
+#                 critic_optim_infos.extend(optim_info)
 
-        optim_info = dict(
-            pg_loss=pg_loss.item(),
-            vf_loss=vf_loss.item(),
-            total_loss=loss.item(),
-            entropy=processed_data['entropy'].item(),
-        )
-        return optim_info
+#             optim_info = self.optimize_by_batches(whole_dataloader, use_policy_loss=True)
+#             merge_value_and_critic_info(critic_optim_infos, optim_info)
+#         return aligned_optim_infos 
+    
+    def optimize_by_batches(self, dataloader, use_policy_loss=True):
+        optim_infos = []
+        # Important debugging note 
+        # what does enumerate dataloader return? is it a batch sized bit of a traj? 
+        # do we need another loop? 
+        for batch_ndx, batch_data in enumerate(dataloader):
+
+            pre_res = self.optim_preprocess(batch_data)
+            processed_data = pre_res
+
+            if use_policy_loss:
+                loss = self.cal_policy_loss(**processed_data)
+                
+                loss.backward()
+                self.optimizer.step()
+                optim_info = dict(
+                    loss = loss.item() 
+                    # vf_loss=value_loss.item(),
+                )
+                
+            else: # value loss 
+                value_loss = self.cal_val_loss(**processed_data)
+
+
+                optim_info = dict(
+                    vf_loss=value_loss.item(),
+                )
+
+            optim_infos.append(optim_info)
+
+        return optim_infos
+         
+
+
+    # def optimize_value_function(self, data):
+    #     pre_res = self.optim_preprocess(data)
+    #     processed_data = pre_res
+    #     value_loss = self.cal_val_loss(**processed_data)
+    #     # self.optimizer.zero_grad()
+    #     # loss.backward()
+    #     # self.optimizer.step()
+
+    #     optim_info = dict(
+    #         pg_loss=pg_loss.item(),
+    #         vf_loss=vf_loss.item(),
+    #         total_loss=loss.item(),
+    #         entropy=processed_data['entropy'].item(),
+    #     )
+    #     return optim_info
 
 
     def optim_preprocess(self, data):
@@ -248,14 +297,27 @@ class DeepExplorationAgent(BaseAgent):
         )
         return processed_data
 
+    def cal_loss(self, ob, ret, log_prob, adv):
+
+        rand_indices = np.random.choice(len(self.critics), size=np.floor(len(self.critics) * cfg.alg.sample_percent))
+        # rand_indices = torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
+        vf_loss = self.cal_val_loss(ob=ob, ret=ret, critic_indices=rand_indices)
+        pg_loss = -torch.mean(log_prob*adv, axis=-1) 
+        loss = pg_loss + vf_loss * cfg.alg.vf_coef
+        return loss, pg_loss, vf_loss
+
+    
     def cal_policy_loss(self, val, ret, log_prob, adv):
 
-        vf_loss = self.cal_val_loss(val=val, ret=ret)
-        loss = -torch.mean(log_prob*adv, axis=-1) + \
-               vf_loss * cfg.alg.vf_coef
-        return loss, vf_loss
+        #vf_loss = self.cal_val_loss(val=val, ret=ret)
+        loss = -torch.mean(log_prob*adv, axis=-1) 
+               # + vf_loss * cfg.alg.vf_coef
+        #return loss, vf_loss
+        return loss
 
-    def cal_val_loss(self, val, ret):
+    def cal_val_loss(self, ob, ret, critic_indices):
+        # TODO check what the output of the critic actually is 
+        val = torch.mean([self.critics[i](ob) for i in critic_indices])
         vf_loss = F.mse_loss( val, ret )
         return vf_loss
 

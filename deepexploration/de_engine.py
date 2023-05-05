@@ -184,6 +184,7 @@ class DeepExplorationEngine:
     def __post_init__(self):
         self.dataset = TrajDataset(self.trajs)
 
+    # TODO: actually we can probably use the old train now, so possibly revert 
     def train(self):
         success_rates = []
         dataset_sizes = []
@@ -294,43 +295,73 @@ class DeepExplorationEngine:
                 self._eval_is_best = False
         return log_info, raw_traj_info
 
+    # def train_batch(self, trajs, sample_percent=.9):
+    #     # TODO: figure out how to calculate steps
+    #     self.cur_step += torch.sum([traj.total_steps for traj in trajs])
+    #     #moved preprocessing to inside the TrajDataset 
+    #     self.dataset = TrajDataset(trajs)
+
+    #     # TODO make sure we can iterate through the critics
+    #     for critic in self.agent.critic:
+    #         critic_optim_info = self.train_critic(trajs, critic)
+    #         # consider logging critic optim info later?
+
+    #     # TODO - ensure this optimizing is just for the actor, not value function
+    #     rollout_dataloader = DataLoader(self.dataset,
+    #                                     batch_size=cfg.alg.batch_size,
+    #                                     shuffle=True,
+    #                                     )
+    #     optim_infos = []
+    #     for oe in range(cfg.alg.opt_epochs):
+    #         for batch_ndx, batch_data in enumerate(rollout_dataloader):
+    #             optim_info = self.agent.optimize_policy(batch_data)
+    #             optim_infos.append(optim_info)
+    #     return [self.get_train_log(optim_infos, traj) for traj in trajs]
+    
     def train_batch(self, trajs, sample_percent=.9):
-        # TODO: figure out how to calculate steps
         self.cur_step += torch.sum([traj.total_steps for traj in trajs])
         #moved preprocessing to inside the TrajDataset 
         self.dataset = TrajDataset(trajs)
+        dataset_size = len(self.dataset.states)
 
+        critic_dataloaders = []
         # TODO make sure we can iterate through the critics
-        for critic in self.agent.critic:
-            critic_optim_info = self.train_critic(trajs, critic)
-            # consider logging critic optim info later?
+        for i in self.agent.critic:
+            rand_indices = np.random.choice(dataset_size, size=np.floor(dataset_size * sample_percent))
+            rollout_dataloader = DataLoader(Subset(self.dataset, rand_indices),
+                                            batch_size=cfg.alg.batch_size,
+                                            shuffle=True,
+                                            )
+            critic_dataloaders.append(rollout_dataloader)
 
         # TODO - ensure this optimizing is just for the actor, not value function
-        rollout_dataloader = DataLoader(self.dataset,
+        whole_dataloader = DataLoader(self.dataset,
                                         batch_size=cfg.alg.batch_size,
                                         shuffle=True,
                                         )
-        optim_infos = []
-        for oe in range(cfg.alg.opt_epochs):
-            for batch_ndx, batch_data in enumerate(rollout_dataloader):
-                optim_info = self.agent.optimize_policy(batch_data)
-                optim_infos.append(optim_info)
+        optim_infos = self.agent.optimize(whole_dataloader, critic_dataloaders)
+
+        # optim_infos = []
+        # for oe in range(cfg.alg.opt_epochs):
+        #     for batch_ndx, batch_data in enumerate(dataloader):
+        #         optim_info = self.agent.optimize(whole_dataloader, critic_dataloaders)
+        #         optim_infos.append(optim_info)
         return [self.get_train_log(optim_infos, traj) for traj in trajs]
 
-    def train_critic(self, critic, sample_percent=.9):
-        dataset_size = len(self.dataset.states)
-        rand_indices = np.random.choice(dataset_size, size=np.floor(dataset_size * sample_percent))
-        rollout_dataloader = DataLoader(Subset(self.dataset, rand_indices),
-                                        batch_size=cfg.alg.batch_size,
-                                        shuffle=True,
-                                        )
-        # TODO - update value function with rollout_dataloader stuff
-        optim_infos = []
-        for oe in range(cfg.alg.opt_epochs):
-            for batch_ndx, batch_data in enumerate(rollout_dataloader):
-                optim_info = self.agent.git p(batch_data)
-                optim_infos.append(optim_info)
-        return optim_infos
+    # def train_critic(self, critic, sample_percent=.9):
+    #     dataset_size = len(self.dataset.states)
+    #     rand_indices = np.random.choice(dataset_size, size=np.floor(dataset_size * sample_percent))
+    #     rollout_dataloader = DataLoader(Subset(self.dataset, rand_indices),
+    #                                     batch_size=cfg.alg.batch_size,
+    #                                     shuffle=True,
+    #                                     )
+    #     # TODO - update value function with rollout_dataloader stuff
+    #     optim_infos = []
+    #     for oe in range(cfg.alg.opt_epochs):
+    #         for batch_ndx, batch_data in enumerate(rollout_dataloader):
+    #             optim_info = self.agent.optimize_agent(batch_data)
+    #             optim_infos.append(optim_info)
+    #     return optim_infos
 
     def rollout_batch(self, num_trajs, **kwargs):
         t0 = time.perf_counter()
