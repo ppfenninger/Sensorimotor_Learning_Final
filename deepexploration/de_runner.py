@@ -71,7 +71,6 @@ class DeepExplorationRunner(BasicRunner):
                 # Samples from policy, explores
                 if not self.agent.is_in_exploration_mode:
                     if np.random.rand() < self.agent.epsilon:
-                        print("entering exploration more")
                         self.agent.is_in_exploration_mode = True
                         self.agent.exploration_steps = 0
                     else:
@@ -79,7 +78,8 @@ class DeepExplorationRunner(BasicRunner):
 
                 if self.agent.is_in_exploration_mode:
                     # candidate_actions is a list of (action, action_info) tuples
-                    candidate_actions = self.agent.get_candidate_actions(ob, sample=sample, **action_kwargs)
+                    candidate_actions, candidate_infos = self.agent.get_candidate_actions(ob, sample=sample,
+                                                                                          **action_kwargs)
 
                     # TODO: Is this step super expensive?
                     next_states_from_candidate_actions = [env.simulate_step(action=candidate_action)[0]
@@ -89,14 +89,16 @@ class DeepExplorationRunner(BasicRunner):
                     candidate_scores = self.agent.get_candidate_scores(next_states_from_candidate_actions)
                     candidate_scores = np.array([candidate_score.numpy() for candidate_score in candidate_scores])
 
-                    action = candidate_actions[np.random.choice(np.arange(len(candidate_actions)),
-                                                                             1,  # choose 1 action proportional to score
-                                                                             p=candidate_scores / sum(
-                                                                                 candidate_scores))[0]]
+                    action_index = np.random.choice(np.arange(len(candidate_actions)),
+                                                    1,  # choose 1 action proportional to score
+                                                    p=candidate_scores / sum(candidate_scores))[0]
+
+                    action = candidate_actions[action_index]
+                    action_info = candidate_infos[action_index]
+
                     self.agent.exploration_steps += 1
 
                     if self.agent.exploration_steps >= self.agent.exploration_horizon:
-                        print("exiting exploration more")
                         self.agent.is_in_exploration_mode = False
                         self.agent.exploration_steps = 0
 

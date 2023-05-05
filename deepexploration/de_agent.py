@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import Categorical, 
+from torch.distributions import Categorical
 from torch.optim.lr_scheduler import LambdaLR
 
 from easyrl.agents.base_agent import BaseAgent
@@ -108,8 +108,18 @@ class DeepExplorationAgent(BaseAgent):
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
         act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(t_ob)
+
+        def get_action_info(action, func_act_dist):
+            log_prob = action_log_prob(action, func_act_dist)
+            entropy = action_entropy(func_act_dist, log_prob)
+            return dict(
+                log_prob=torch_to_np(log_prob),
+                entropy=torch_to_np(entropy),
+        )
+
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
-        return candidate_actions
+        candidate_action_infos = [get_action_info(action, act_dist) for action in candidate_actions]
+        return candidate_actions, candidate_action_infos
 
     @torch.no_grad()
     def get_candidate_scores(self, next_states_from_candidate_actions, *args, **kwargs):
@@ -139,8 +149,7 @@ class DeepExplorationAgent(BaseAgent):
         entropy = action_entropy(act_dist, log_prob)
         action_info = dict(
             log_prob=torch_to_np(log_prob),
-            entropy=torch_to_np(entropy),
-            val=torch_to_np(avg_val)
+            entropy=torch_to_np(entropy)
         )
 
         return torch_to_np(action), action_info
@@ -158,7 +167,7 @@ class DeepExplorationAgent(BaseAgent):
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
         # vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
-        vals = torch.tensor(self.get_act_val(ob, i) for i in range(len(self.critics)))
+        vals = torch.tensor([self.get_act_val(ob, i) for i in range(len(self.critics))])
         return act_dist, vals
 
     @torch.no_grad()

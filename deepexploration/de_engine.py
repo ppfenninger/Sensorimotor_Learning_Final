@@ -11,10 +11,10 @@ import torch
 import torch.optim as optim
 from easyrl.configs import cfg
 import tqdm
-from easyrl.utils.common import save_traj
-from deepexploration.utils import run_inference
-from deepexploration.utils import eval_agent
+from easyrl.utils.common import save_traj, get_list_stats
 from typing import Any
+
+from utils import eval_agent
 
 
 class TrajDataset(Dataset):
@@ -27,7 +27,6 @@ class TrajDataset(Dataset):
         log_probs = []
 
         for traj in trajs:
-            
             obs, a, adv, ret, log_prob, val = self.traj_preprocess(traj)
             states.append(obs)
             actions.append(a)
@@ -153,36 +152,14 @@ def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, dis
         logs['epoch'].append(iter)
     return agent, logs, len(dataset)
 
-def eval_agent(agent, env, num_trials, disable_tqdm=False, render=False):
-    trajs = run_inference(agent, env, num_trials, return_on_done=True,
-                          disable_tqdm=disable_tqdm, render=render)
-    tsps = []
-    successes = []
-    rets = []
-    for traj in trajs:
-        tsps = traj.steps_til_done.copy().tolist()
-        rewards = traj.raw_rewards
-        infos = traj.infos
-        for ej in range(rewards.shape[1]):
-            ret = np.sum(rewards[:tsps[ej], ej])
-            rets.append(ret)
-            successes.append(infos[tsps[ej] - 1][ej]['success'])
-        if render:
-            save_traj(traj, 'tmp')
-    ret_mean = np.mean(rets)
-    ret_std = np.std(rets)
-    success_rate = np.mean(successes)
-    return success_rate, ret_mean, ret_std, rets, successes
-
 @dataclass
 class DeepExplorationEngine:
     agent: Any
     runner: Any
     env: Any
-    trajs: Any
 
-    def __post_init__(self):
-        self.dataset = TrajDataset(self.trajs)
+    # def __post_init__(self):
+        # self.dataset = TrajDataset(self.trajs)
 
     # TODO: actually we can probably use the old train now, so possibly revert 
     def train(self):
@@ -192,12 +169,14 @@ class DeepExplorationEngine:
         for iter_t in count():
             print(f'iter: {iter_t}')
             if iter_t % cfg.alg.eval_interval == 0:
+                print("started eval agent")
                 success_rate, ret_mean, ret_std, rets, successes = eval_agent(self.agent,
                                                                               self.env,
                                                                               200,
                                                                               disable_tqdm=True)
+                print("finished eval agent")
                 success_rates.append(success_rate)
-                dataset_sizes.append(len(self.dataset))
+                dataset_sizes.append(len(self.dataset)) # TODO: this is wrong -> engine doesn't have a dataset
                 # logging from train_ppo
                 det_log_info, _ = self.eval(eval_num=cfg.alg.test_num,
                                             sample=False, smooth=True)
