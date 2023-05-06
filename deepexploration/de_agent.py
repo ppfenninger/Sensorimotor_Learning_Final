@@ -139,6 +139,14 @@ class DeepExplorationAgent(BaseAgent):
         return scores
 
     @torch.no_grad()
+    def get_exploration_bonus(self, state):
+        '''This function returns the exploration bonus for a given state. This is beta times the std deviation of the values at
+        that state according to the ensemble of critics.'''
+        self.eval_mode()
+        act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(state)
+        return self.beta * std_val
+
+    @torch.no_grad()
     def get_action(self, ob, sample=True, *args, **kwargs):
         self.eval_mode()
         t_ob = torch_float(ob, device=cfg.alg.device)
