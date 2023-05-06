@@ -41,6 +41,7 @@ class DeepExplorationAgent(BaseAgent):
     discount = .9 #will need to move to config 
 
     def __post_init__(self):
+        print("i have this many people telling me what to do", len(self.critics))
         move_to([self.actor] + self.critics,
                 device=cfg.alg.device)
         if cfg.alg.vf_loss_type == 'mse':
@@ -115,7 +116,7 @@ class DeepExplorationAgent(BaseAgent):
             return dict(
                 log_prob=torch_to_np(log_prob),
                 entropy=torch_to_np(entropy),
-                val=avg_val
+                val=torch_to_np(avg_val)
         )
 
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
@@ -159,33 +160,32 @@ class DeepExplorationAgent(BaseAgent):
         action_info = dict(
             log_prob=torch_to_np(log_prob),
             entropy=torch_to_np(entropy),
-            val=avg_val
+            val=torch_to_np(avg_val)
         )
 
         return torch_to_np(action), action_info
 
-    @torch.no_grad()
     def get_act_val_ensemble_stats(self, ob, *args, **kwargs):
         '''Returns the action distribution, the average value of the critics, and
         the std of the critics'''
         act_dist, vals = self.get_act_vals_from_ensemble(ob, *args, **kwargs)
         return act_dist, torch.mean(vals), torch.std(vals)
 
-    @torch.no_grad()
     def get_act_vals_from_ensemble(self, ob, *args, **kwargs):
         '''Returns the action distribution and values from all the critics'''
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
         # vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
+        if ob.shape[0] > 1:
+            print("ob.shape", ob.shape)
+            print("self.get_act_val(ob, i)", self.get_act_val(ob, 0))
         vals = torch.tensor([self.get_act_val(ob, i) for i in range(len(self.critics))])
         return act_dist, vals
 
-    @torch.no_grad()
     def get_act_val(self, ob, critic_index, *args, **kwargs):
         '''
         Returns the value of the critic at critic_index predicts for ob
         '''
-        self.eval_mode()
         ob = torch_float(ob, device=cfg.alg.device)
         val, body_out = self.critics[critic_index](x=ob)
         val = val.squeeze(-1)
@@ -193,11 +193,9 @@ class DeepExplorationAgent(BaseAgent):
 
     def optimize(self, data, *args, **kwargs):
         processed_data = self.optim_preprocess(data)
-        
         loss, pg_loss, vf_loss = self.cal_loss(**processed_data)
-        
         self.optimizer.zero_grad()
-        loss.backward()
+        loss.backward(retain_graph=True)
 
         grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
         self.optimizer.step()
@@ -215,33 +213,36 @@ class DeepExplorationAgent(BaseAgent):
         self.train_mode()
         for key, val in data.items():
             data[key] = torch_float(val, device=cfg.alg.device)
-        ob = data['ob']
-        action = data['action']
+        obs = data['ob']
+        actions = data['action']
         ret = data['ret']
         adv = data['adv']
-        # old_val = data['val']
+        vals = []
+        log_probs = []
 
-        act_dist, vals  = self.get_act_vals_from_ensemble(ob)
-        log_prob = action_log_prob(action, act_dist)
+        for i, ob in enumerate(obs):
+            act_dist, val = self.get_act_vals_from_ensemble(ob)
+            vals.append(val)
+            log_prob = action_log_prob(actions[i], act_dist)
+            if not all([x.ndim == 1 for x in [log_prob]]):
+                raise ValueError('val, log_prob should be 1-dim!')
+            log_probs.append(log_prob)
+        vals = torch.vstack(vals)
+        log_probs = torch.vstack(log_probs)
         # entropy = action_entropy(act_dist, log_prob)
-        if not all([x.ndim == 1 for x in [log_prob, vals[0]]]):
-            raise ValueError('val, log_prob should be 1-dim!')
         processed_data = dict(
-            ob=ob,
-            vals=vals, # this is a list of vals for each critic 
+            ob=obs,
+            vals=vals,  # this is a list of vals for each critic
             ret=ret,
-            log_prob=log_prob,
+            log_prob=log_probs,
             adv=adv,
 
         )
         return processed_data
 
     def cal_loss(self, ob, vals, ret, log_prob, adv):
-
-        rand_indices = np.random.choice(len(self.critics), size=np.floor(len(self.critics) * cfg.alg.sample_percent))
-        # rand_indices = torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
         vf_loss = self.cal_val_loss(ob=ob, vals=vals, ret=ret)
-        pg_loss = -torch.mean(log_prob*adv, axis=-1) 
+        pg_loss = -torch.mean(log_prob*adv)
         loss = pg_loss + vf_loss * cfg.alg.vf_coef
         return loss, pg_loss, vf_loss
     
@@ -249,10 +250,13 @@ class DeepExplorationAgent(BaseAgent):
         # TODO check what the output of the critic actually is 
         # val = torch.mean([self.critics[i](ob) for i in critic_indices])
         ensemble_mask = 1
-        if rand_indices: 
-            ensemble_mask = torch.cuda.FloatTensor(10, 10).uniform_() > 0.8
-        val = torch.mean(ensemble_mask*vals)
-        vf_loss = F.mse_loss( val, ret )
+        num_chosen_critics = 0
+        if rand_indices:
+            while num_chosen_critics <= 0:
+                ensemble_mask = torch.Tensor(1, len(self.critics)).uniform_().to(device=cfg.alg.device) > 0.8
+                num_chosen_critics = sum(sum(ensemble_mask.int()))
+        val = torch.mean(ensemble_mask*vals.to(cfg.alg.device), dim=-1)*(len(self.critics) / num_chosen_critics)
+        vf_loss = F.mse_loss(val, ret.squeeze())
         return vf_loss
 
     def train_mode(self):

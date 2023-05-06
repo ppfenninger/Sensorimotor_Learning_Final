@@ -172,7 +172,7 @@ class DeepExplorationEngine:
         return dataset_sizes, success_rates
 
     @torch.no_grad()
-    def eval(self, render=False, save_eval_traj=False, eval_num=1,
+    def eval(self, render=False, save_eval_traj=False, eval_num=2,
              sleep_time=0, sample=True, smooth=True, no_tqdm=None):
 
         ## TODO ensure this eval works, it probably does not require change

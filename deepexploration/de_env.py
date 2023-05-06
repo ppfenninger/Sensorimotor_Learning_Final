@@ -22,9 +22,9 @@ class URRobotPusherGym(gym.Env):
         self._goal_bounds = np.array([[0.3, 0.65],  # [xmin, xmax]
                                       [0.0, 0.25]])  # [ymin, ymax]
         self.robot = ar.Robot('ur5e_stick',
-                              pb_cfg={'gui': gui,
+                              pb_cfg={'gui': False,
                                       'realtime': False,
-                                      'opengl_render': torch.cuda.is_available()})
+                                      'opengl_render': False}) #torch.cuda.is_available()})
         self._arm_reset_pos = np.array([-0.38337763,
                                         -2.02650575,
                                         -2.01989619,
