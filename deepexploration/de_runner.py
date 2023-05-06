@@ -48,6 +48,9 @@ class DeepExplorationRunner(BasicRunner):
             all_dones = np.zeros(env.num_envs, dtype=bool)
         else:
             all_dones = None
+        print("time_steps", time_steps)
+        print("random_action", random_action)
+        print("exploration_enabled", exploration_enabled)
         for t in range(time_steps):
             if render:
                 env.render()
@@ -115,18 +118,6 @@ class DeepExplorationRunner(BasicRunner):
                 for img, inf in zip(imgs, info):
                     inf['render_image'] = deepcopy(img)
 
-            # print("info", info)
-            # print("all dones", all_dones)
-            # print("done", done)
-            # done_idx = np.argwhere(done).flatten()
-            # print("done_idx", done_idx)
-            # print("[info[i]['true_next_ob'] for i in done_idx]", [info[i]['true_next_ob'] for i in done_idx])
-            # true_next_ob = deepcopy(next_ob)
-            # if done_idx.size > 0:
-            #     print(" true_next_ob[done_idx]",  true_next_ob[done_idx])
-            #     print("next_ob", next_ob)
-            #     true_next_ob[done_idx] = np.array([info[i]['true_next_ob'] for i in done_idx])
-            #     print("next ob", next_ob)
             true_next_ob, true_done, all_dones = self.get_true_done_next_ob(next_ob,
                                                                             done,
                                                                             reward,
@@ -143,9 +134,11 @@ class DeepExplorationRunner(BasicRunner):
             ob = next_ob
             traj.add(sd)
             if return_on_done and np.all(all_dones):
+                print("We are done!", t)
                 break
 
         if get_last_val and not evaluation:
+            print("if get_last_val and not evaluation:")
             _, last_val, _ = self.agent.get_act_val_ensemble_stats(traj[-1].next_ob)
             traj.add_extra('last_val', torch_to_np(last_val))
         self.obs = ob if not evaluation else None

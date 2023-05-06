@@ -3,6 +3,7 @@ from collections import deque
 from itertools import count
 from dataclasses import dataclass
 
+from easyrl.engine.basic_engine import BasicEngine
 from easyrl.utils.rl_logger import TensorboardLogger
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -21,7 +22,7 @@ from utils import eval_agent
 
 
 class TrajDataset(Dataset):
-    def __init__(self, trajs=[]):
+    def __init__(self, traj):
         states = []
         actions = []
         values = []
@@ -29,14 +30,13 @@ class TrajDataset(Dataset):
         returns = []
         log_probs = []
 
-        for traj in trajs:
-            obs, a, adv, ret, log_prob, val = self.traj_preprocess(traj)
-            states.append(obs)
-            actions.append(a)
-            values.append(val)
-            log_probs.append(log_prob)
-            returns.append(ret)
-            advantages.append(adv)
+        obs, a, adv, ret, log_prob, val = self.traj_preprocess(traj)
+        states.append(obs)
+        actions.append(a)
+        values.append(val)
+        log_probs.append(log_prob)
+        returns.append(ret)
+        advantages.append(adv)
 
         self.data = {
             "ob": states,
@@ -59,21 +59,11 @@ class TrajDataset(Dataset):
             sample[key] = self.data[key][idx]
         return sample
 
-    def add_traj(self, traj=None, states=None, actions=None):
-        if traj is not None:
-            self.states = np.concatenate((self.states, traj.obs), axis=0)
-            self.actions = np.concatenate((self.actions, traj.actions), axis=0)
-        else:
-            self.states = np.concatenate((self.states, states), axis=0)
-            self.actions = np.concatenate((self.actions, actions), axis=0)
-
     def traj_preprocess(self, traj):
-        action_infos = traj.action_infos
-        print(action_infos)
-        vals = np.array([ainfo['val'] for ainfo in action_infos])
+        action_infos = [step_data.action_info for step_data in traj.traj_data]
+        vals = np.expand_dims(np.array([ainfo['val'] for ainfo in action_infos]), axis=1)
         log_prob = np.array([ainfo['log_prob'] for ainfo in action_infos])
         adv = self.cal_advantages(traj)
-        # TODO returns may not be discounted?
         ret = adv + vals
         if cfg.alg.normalize_adv:
             adv = adv.astype(np.float64)
@@ -92,9 +82,9 @@ class TrajDataset(Dataset):
     # TODO migrate one of the cal_advantages?
 
     def cal_advantages(self, traj):
-        rewards = traj.rewards
-        action_infos = traj.action_infos
-        vals = torch.tensor([ainfo['val'] for ainfo in action_infos])
+        rewards = np.array([step_data.reward for step_data in traj.traj_data])
+        action_infos = [step_data.action_info for step_data in traj.traj_data]
+        vals = np.array([ainfo['val'] for ainfo in action_infos])
         last_val = torch.from_numpy(traj.extra_data['last_val']).reshape(1)
         # there's also a torch version if necessary.
         adv = cal_gae(gamma=cfg.alg.rew_discount,
@@ -121,51 +111,14 @@ class TrajDataset(Dataset):
 
         return advantages[:self.agent.T]
 
-
-## Sample from homework>
-def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, disable_tqdm=True):
-    dataset = TrajDataset(trajs)
-
-    # TODO: override DataLoader default behavior to sample randomly with replacement from the dataset
-    dataloader = DataLoader(dataset,
-                            batch_size=batch_size,
-                            shuffle=True)
-
-    optimizer = optim.Adam(agent.actor.parameters(),
-                           lr=lr)
-    pbar = tqdm(range(max_epochs), desc='Epoch', disable=disable_tqdm)
-    logs = dict(loss=[], epoch=[])
-    for iter in pbar:
-        avg_loss = []
-        for batch_idx, sample in enumerate(dataloader):
-            states = sample['state'].float().to(cfg.alg.device)
-            expert_actions = sample['action'].float().to(cfg.alg.device)
-            optimizer.zero_grad()
-            act_dist, _ = agent.actor(states)
-            #### TODO: compute the loss in a variable named as 'loss'
-            #### using the act_dist and expert_actions
-            loss = -torch.sum(act_dist.log_prob(expert_actions))
-            ####
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            pbar.set_postfix({'loss': loss.item()})
-            avg_loss.append(loss.item())
-        logs['loss'].append(np.mean(avg_loss))
-        logs['epoch'].append(iter)
-    return agent, logs, len(dataset)
-
-
 @dataclass
-class DeepExplorationEngine:
+class DeepExplorationEngine(BasicEngine):
     agent: Any
     runner: Any
     env: Any
     smooth_eval_return: Any = None
 
     def __post_init__(self):
-        self.dataset = TrajDataset()
         self.cur_step = 0
         self._best_eval_ret = -np.inf
         self._eval_is_best = False
@@ -185,7 +138,6 @@ class DeepExplorationEngine:
     # TODO: actually we can probably use the old train now, revert
     def train(self):
         success_rates = []
-        dataset_sizes = []
         self.cur_step = 0
         for iter_t in count():
             print(f'iter: {iter_t}')
@@ -197,7 +149,6 @@ class DeepExplorationEngine:
                                                                               disable_tqdm=True)
                 print("finished eval agent")
                 success_rates.append(success_rate)
-                dataset_sizes.append(len(self.dataset))
                 # logging from train_ppo
                 det_log_info, _ = self.eval(eval_num=cfg.alg.test_num,
                                             sample=False, smooth=True)
@@ -219,19 +170,18 @@ class DeepExplorationEngine:
 
             # logging things
             if iter_t % cfg.alg.log_interval == 0:
-                for train_log_info in train_log_infos:
-                    train_log_info['train/rollout_time'] = rollout_time
-                    if eval_log_info is not None:
-                        train_log_info.update(eval_log_info)
-                    if cfg.alg.linear_decay_lr:
-                        train_log_info.update(self.agent.get_lr())
-                    if cfg.alg.linear_decay_clip_range:
-                        train_log_info.update(dict(clip_range=cfg.alg.clip_range))
-                    scalar_log = {'scalar': train_log_info}
-                    self.tf_logger.save_dict(scalar_log, step=self.cur_step)
+                train_log_info['train/rollout_time'] = rollout_time
+                if eval_log_info is not None:
+                    train_log_info.update(eval_log_info)
+                if cfg.alg.linear_decay_lr:
+                    train_log_info.update(self.agent.get_lr())
+                if cfg.alg.linear_decay_clip_range:
+                    train_log_info.update(dict(clip_range=cfg.alg.clip_range))
+                scalar_log = {'scalar': train_log_info}
+                self.tf_logger.save_dict(scalar_log, step=self.cur_step)
             if self.cur_step > cfg.alg.max_steps:
                 break
-        return dataset_sizes, success_rates
+        return success_rates
 
     ## TODO ensure this eval works, it probably does not require change
     @torch.no_grad()
@@ -262,6 +212,7 @@ class DeepExplorationEngine:
                 lst_step_infos.append(infos[tsps[ej] - 1][ej])
             time_steps.extend(tsps)
             if save_eval_traj:
+                print(traj)
                 save_traj(traj, cfg.alg.eval_dir)
             if 'success' in infos[0][0]:
                 successes.extend([infos[tsps[ej] - 1][ej]['success'] for ej in range(rewards.shape[1])])
@@ -302,37 +253,6 @@ class DeepExplorationEngine:
                 optim_info = self.agent.optimize(batch_data)
                 optim_infos.append(optim_info)
         return self.get_train_log(optim_infos, traj)
-
-    # def train_batch(self, trajs, sample_percent=.9):
-    #     self.cur_step += torch.sum([traj.total_steps for traj in trajs])
-    #     #moved preprocessing to inside the TrajDataset 
-    #     self.dataset = TrajDataset(trajs)
-    #     dataset_size = len(self.dataset.states)
-
-    #     critic_dataloaders = []
-    #     # TODO make sure we can iterate through the critics
-    #     for i in self.agent.critic:
-    #         rand_indices = np.random.choice(dataset_size, size=np.floor(dataset_size * sample_percent))
-    #         rollout_dataloader = DataLoader(Subset(self.dataset, rand_indices),
-    #                                         batch_size=cfg.alg.batch_size,
-    #                                         shuffle=True,
-    #                                         )
-    #         critic_dataloaders.append(rollout_dataloader)
-
-    #     # TODO - ensure this optimizing is just for the actor, not value function
-    #     whole_dataloader = DataLoader(self.dataset,
-    #                                     batch_size=cfg.alg.batch_size,
-    #                                     shuffle=True,
-    #                                     )
-    #     optim_infos = self.agent.optimize(whole_dataloader, critic_dataloaders)
-
-    #     # optim_infos = []
-    #     # for oe in range(cfg.alg.opt_epochs):
-    #     #     for batch_ndx, batch_data in enumerate(dataloader):
-    #     #         optim_info = self.agent.optimize(whole_dataloader, critic_dataloaders)
-    #     #         optim_infos.append(optim_info)
-    #     return [self.get_train_log(optim_infos, traj) for traj in trajs]
-
 
     def rollout_once(self, *args, **kwargs):
         t0 = time.perf_counter()

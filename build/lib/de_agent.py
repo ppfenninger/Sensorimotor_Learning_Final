@@ -202,7 +202,7 @@ class DeepExplorationAgent(BaseAgent):
         old_log_prob = data['log_prob']
         old_val = data['val']
 
-        act_dist, val = self.get_act_val(ob)
+        act_dist, val, _ = self.get_act_val(ob)
         log_prob = action_log_prob(action, act_dist)
         entropy = action_entropy(act_dist, log_prob)
         if not all([x.ndim == 1 for x in [val, entropy, log_prob]]):
