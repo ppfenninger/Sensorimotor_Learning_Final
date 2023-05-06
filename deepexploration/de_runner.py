@@ -115,11 +115,23 @@ class DeepExplorationRunner(BasicRunner):
                 for img, inf in zip(imgs, info):
                     inf['render_image'] = deepcopy(img)
 
+            # print("info", info)
+            # print("all dones", all_dones)
+            # print("done", done)
+            # done_idx = np.argwhere(done).flatten()
+            # print("done_idx", done_idx)
+            # print("[info[i]['true_next_ob'] for i in done_idx]", [info[i]['true_next_ob'] for i in done_idx])
+            # true_next_ob = deepcopy(next_ob)
+            # if done_idx.size > 0:
+            #     print(" true_next_ob[done_idx]",  true_next_ob[done_idx])
+            #     print("next_ob", next_ob)
+            #     true_next_ob[done_idx] = np.array([info[i]['true_next_ob'] for i in done_idx])
+            #     print("next ob", next_ob)
             true_next_ob, true_done, all_dones = self.get_true_done_next_ob(next_ob,
                                                                             done,
                                                                             reward,
-                                                                            [info],  # TODO figure out info
-                                                                            all_dones,
+                                                                            info,  # TODO figure out info
+                                                                            all_dones,  # TODO figure out all_dones
                                                                             skip_record=evaluation)
             sd = StepData(ob=ob,
                           action=action,
@@ -134,7 +146,7 @@ class DeepExplorationRunner(BasicRunner):
                 break
 
         if get_last_val and not evaluation:
-            last_val = self.agent.get_val(traj[-1].next_ob)
+            _, last_val, _ = self.agent.get_act_val_ensemble_stats(traj[-1].next_ob)
             traj.add_extra('last_val', torch_to_np(last_val))
         self.obs = ob if not evaluation else None
         return traj

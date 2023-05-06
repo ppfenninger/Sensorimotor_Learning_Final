@@ -1,6 +1,9 @@
 import time
+from collections import deque
 from itertools import count
 from dataclasses import dataclass
+
+from easyrl.utils.rl_logger import TensorboardLogger
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data import Subset
@@ -10,7 +13,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from easyrl.configs import cfg
-import tqdm
+from tqdm.notebook import tqdm
 from easyrl.utils.common import save_traj, get_list_stats
 from typing import Any
 
@@ -18,7 +21,7 @@ from utils import eval_agent
 
 
 class TrajDataset(Dataset):
-    def __init__(self, trajs):
+    def __init__(self, trajs=[]):
         states = []
         actions = []
         values = []
@@ -36,21 +39,23 @@ class TrajDataset(Dataset):
             advantages.append(adv)
 
         self.data = {
-            "ob": np.concatenate(states, axis=0),
-            "action": np.concatenate(actions, axis=0),
-            "val": np.concatenate(values, axis=0), 
-            "adv": np.concatenate(advantages, axis=0),
-            "ret": np.concatenate(returns, axis=0), 
-            "log_prob": np.concatenate(log_probs, axis=0)
+            "ob": states,
+            "action": actions,
+            "val": values,
+            "adv": advantages,
+            "ret": returns,
+            "log_prob": log_probs
         }
-
+        self.states = states
+        self.actions = actions
 
     def __len__(self):
-        return self.states.shape[0]
+        # return self.states.shape[0]
+        return len(self.states)
 
     def __getitem__(self, idx):
         sample = dict()
-        for key in self.data: 
+        for key in self.data:
             sample[key] = self.data[key][idx]
         return sample
 
@@ -64,10 +69,11 @@ class TrajDataset(Dataset):
 
     def traj_preprocess(self, traj):
         action_infos = traj.action_infos
+        print(action_infos)
         vals = np.array([ainfo['val'] for ainfo in action_infos])
         log_prob = np.array([ainfo['log_prob'] for ainfo in action_infos])
         adv = self.cal_advantages(traj)
-        #TODO returns may not be discounted? 
+        # TODO returns may not be discounted?
         ret = adv + vals
         if cfg.alg.normalize_adv:
             adv = adv.astype(np.float64)
@@ -83,20 +89,20 @@ class TrajDataset(Dataset):
 
         return traj.obs, traj.actions, adv, ret, log_prob, vals
 
-    #TODO migrate one of the cal_advantages? 
+    # TODO migrate one of the cal_advantages?
 
     def cal_advantages(self, traj):
         rewards = traj.rewards
         action_infos = traj.action_infos
-        vals = np.array([ainfo['val'] for ainfo in action_infos])
-        last_val = traj.extra_data['last_val']
-        # there's also a torch version if necessary. 
-        adv = cal_gae_torch(gamma=cfg.alg.rew_discount,
-                        lam=cfg.alg.gae_lambda,
-                        rewards=rewards,
-                        value_estimates=vals,
-                        last_value=last_val,
-                        dones=traj.dones)
+        vals = torch.tensor([ainfo['val'] for ainfo in action_infos])
+        last_val = torch.from_numpy(traj.extra_data['last_val']).reshape(1)
+        # there's also a torch version if necessary.
+        adv = cal_gae(gamma=cfg.alg.rew_discount,
+                            lam=cfg.alg.gae_lambda,
+                            rewards=rewards,
+                            value_estimates=vals,
+                            last_value=last_val,
+                            dones=traj.dones)
         return adv
 
     # from homework, probably will not use 
@@ -116,13 +122,11 @@ class TrajDataset(Dataset):
         return advantages[:self.agent.T]
 
 
-
-
 ## Sample from homework>
 def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, disable_tqdm=True):
     dataset = TrajDataset(trajs)
 
-    #TODO: override DataLoader default behavior to sample randomly with replacement from the dataset
+    # TODO: override DataLoader default behavior to sample randomly with replacement from the dataset
     dataloader = DataLoader(dataset,
                             batch_size=batch_size,
                             shuffle=True)
@@ -152,16 +156,33 @@ def train_de_agent(agent, trajs, max_epochs=5000, batch_size=256, lr=0.0005, dis
         logs['epoch'].append(iter)
     return agent, logs, len(dataset)
 
+
 @dataclass
 class DeepExplorationEngine:
     agent: Any
     runner: Any
     env: Any
+    smooth_eval_return: Any = None
 
-    # def __post_init__(self):
-        # self.dataset = TrajDataset(self.trajs)
+    def __post_init__(self):
+        self.dataset = TrajDataset()
+        self.cur_step = 0
+        self._best_eval_ret = -np.inf
+        self._eval_is_best = False
+        if cfg.alg.test or cfg.alg.resume:
+            self.cur_step = self.agent.load_model(step=cfg.alg.resume_step)
+        else:
+            if cfg.alg.pretrain_model is not None:
+                self.agent.load_model(pretrain_model=cfg.alg.pretrain_model)
+            cfg.alg.create_model_log_dir()
+        self.train_ep_return = deque(maxlen=100)
+        self.smooth_eval_return = None
+        self.smooth_tau = cfg.alg.smooth_eval_tau
+        self.optim_stime = None
+        if not cfg.alg.test:
+            self.tf_logger = TensorboardLogger(log_dir=cfg.alg.log_dir)
 
-    # TODO: actually we can probably use the old train now, revert 
+    # TODO: actually we can probably use the old train now, revert
     def train(self):
         success_rates = []
         dataset_sizes = []
@@ -172,11 +193,11 @@ class DeepExplorationEngine:
                 print("started eval agent")
                 success_rate, ret_mean, ret_std, rets, successes = eval_agent(self.agent,
                                                                               self.env,
-                                                                              200,
+                                                                              1,
                                                                               disable_tqdm=True)
                 print("finished eval agent")
                 success_rates.append(success_rate)
-                dataset_sizes.append(len(self.dataset)) # TODO: this is wrong -> engine doesn't have a dataset
+                dataset_sizes.append(len(self.dataset))
                 # logging from train_ppo
                 det_log_info, _ = self.eval(eval_num=cfg.alg.test_num,
                                             sample=False, smooth=True)
@@ -281,7 +302,7 @@ class DeepExplorationEngine:
                 optim_info = self.agent.optimize(batch_data)
                 optim_infos.append(optim_info)
         return self.get_train_log(optim_infos, traj)
-    
+
     # def train_batch(self, trajs, sample_percent=.9):
     #     self.cur_step += torch.sum([traj.total_steps for traj in trajs])
     #     #moved preprocessing to inside the TrajDataset 

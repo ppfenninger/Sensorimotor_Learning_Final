@@ -24,7 +24,7 @@ class EpisodicRunner(BasicRunner):
                  return_on_done=False, render=False, render_image=False,
                  sleep_time=0, reset_first=False,
                  reset_kwargs=None, action_kwargs=None,
-                 random_action=False, get_last_val=False):
+                 random_action=False, get_last_val=True):
         traj = Trajectory()
         if reset_kwargs is None:
             reset_kwargs = {}

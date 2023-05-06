@@ -133,7 +133,7 @@ class DeepExplorationAgent(BaseAgent):
     def get_action(self, ob, sample=True, *args, **kwargs):
         self.eval_mode()
         if self.exploration_mode:
-
+            print("Idk what we are ")
         else:
             t_ob = torch_float(ob, device=cfg.alg.device)
             act_dist, avg_val, std_val = self.get_act_val(t_ob)

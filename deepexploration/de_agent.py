@@ -32,10 +32,10 @@ class DeepExplorationAgent(BaseAgent):
     critics: List[nn.Module]
     same_body: float = False
     is_in_exploration_mode = False
-    exploration_horizon = 5
+    exploration_horizon = 1
     exploration_steps = 0
     beta = 0.1
-    epsilon = 0.2
+    epsilon = 0
     k_samples = 10
     gae_lambda = .5 #will need to move to config 
     discount = .9 #will need to move to config 
@@ -109,16 +109,17 @@ class DeepExplorationAgent(BaseAgent):
         t_ob = torch_float(ob, device=cfg.alg.device)
         act_dist, avg_val, std_val = self.get_act_val_ensemble_stats(t_ob)
 
-        def get_action_info(action, func_act_dist):
+        def get_action_info(action, func_act_dist, avg_val):
             log_prob = action_log_prob(action, func_act_dist)
             entropy = action_entropy(func_act_dist, log_prob)
             return dict(
                 log_prob=torch_to_np(log_prob),
                 entropy=torch_to_np(entropy),
+                val=avg_val
         )
 
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
-        candidate_action_infos = [get_action_info(action, act_dist) for action in candidate_actions]
+        candidate_action_infos = [get_action_info(action, act_dist, avg_val) for action in candidate_actions] # TODO: avg val feels wrong here
         return candidate_actions, candidate_action_infos
 
     @torch.no_grad()
@@ -157,7 +158,8 @@ class DeepExplorationAgent(BaseAgent):
         entropy = action_entropy(act_dist, log_prob)
         action_info = dict(
             log_prob=torch_to_np(log_prob),
-            entropy=torch_to_np(entropy)
+            entropy=torch_to_np(entropy),
+            val=avg_val
         )
 
         return torch_to_np(action), action_info
