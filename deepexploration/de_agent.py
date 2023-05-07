@@ -34,8 +34,8 @@ class DeepExplorationAgent(BaseAgent):
     is_in_exploration_mode = False
     exploration_horizon = 1
     exploration_steps = 0
-    beta = 0.1
-    epsilon = 0
+    beta = 0.02
+    epsilon = 0.1
     k_samples = 10
     gae_lambda = .5 #will need to move to config 
     discount = .9 #will need to move to config 
@@ -137,6 +137,8 @@ class DeepExplorationAgent(BaseAgent):
             avg_values.append(avg_val)
             std_values.append(std_val)
 
+        # print("avgs", avg_values)
+        # print("stds", std_values)
         scores = [avg_val + self.beta * std_val for avg_val, std_val in zip(avg_values, std_values)]
         return scores
 
@@ -176,9 +178,6 @@ class DeepExplorationAgent(BaseAgent):
         ob = torch_float(ob, device=cfg.alg.device)
         act_dist, body_out = self.actor(ob)
         # vals = torch.tensor([critic(x=ob)[0].squeeze(-1) for critic in self.critics])
-        if ob.shape[0] > 1:
-            print("ob.shape", ob.shape)
-            print("self.get_act_val(ob, i)", self.get_act_val(ob, 0))
         vals = torch.tensor([self.get_act_val(ob, i) for i in range(len(self.critics))])
         return act_dist, vals
 
@@ -195,7 +194,7 @@ class DeepExplorationAgent(BaseAgent):
         processed_data = self.optim_preprocess(data)
         loss, pg_loss, vf_loss = self.cal_loss(**processed_data)
         self.optimizer.zero_grad()
-        loss.backward(retain_graph=True)
+        loss.backward()
 
         grad_norm = clip_grad(self.all_params, cfg.alg.max_grad_norm)
         self.optimizer.step()
@@ -217,6 +216,7 @@ class DeepExplorationAgent(BaseAgent):
         actions = data['action']
         ret = data['ret']
         adv = data['adv']
+        old_log_probs = data["log_prob"]
         vals = []
         log_probs = []
 
@@ -235,14 +235,27 @@ class DeepExplorationAgent(BaseAgent):
             vals=vals,  # this is a list of vals for each critic
             ret=ret,
             log_prob=log_probs,
+            old_log_prob=old_log_probs,
             adv=adv,
 
         )
         return processed_data
 
-    def cal_loss(self, ob, vals, ret, log_prob, adv):
+    def cal_loss(self, ob, vals, ret, log_prob, old_log_prob, adv):
         vf_loss = self.cal_val_loss(ob=ob, vals=vals, ret=ret)
-        pg_loss = -torch.mean(log_prob*adv)
+        # ratio = torch.exp(log_prob - old_log_prob)
+        # print("log_prob", log_prob)
+        # print("old_log_prob", old_log_prob)
+        # surr1 = adv * ratio
+        # # print("adv", adv)
+        # # print("surr1", surr1)
+        # surr2 = adv * torch.clamp(ratio,
+        #                           1 - cfg.alg.clip_range,
+        #                           1 + cfg.alg.clip_range)
+        # # pg_loss = -torch.mean(torch.min((surr1, surr2), dim=-1))
+        # pg_loss = -torch.mean(torch.minimum(surr1, surr2))
+        pg_loss = -torch.mean(log_prob * adv)
+        # print("pg_loss.shape", pg_loss.shape, pg_loss)
         loss = pg_loss + vf_loss * cfg.alg.vf_coef
         return loss, pg_loss, vf_loss
     

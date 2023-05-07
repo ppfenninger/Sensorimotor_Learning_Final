@@ -64,7 +64,7 @@ class TrajDataset(Dataset):
         vals = np.expand_dims(np.array([ainfo['val'] for ainfo in action_infos]), axis=1)
         log_prob = np.array([ainfo['log_prob'] for ainfo in action_infos])
         adv = self.cal_advantages(traj)
-        ret = adv + vals
+        ret = adv + vals.squeeze(1)
         if cfg.alg.normalize_adv:
             adv = adv.astype(np.float64)
             adv = (adv - np.mean(adv)) / (np.std(adv) + 1e-8)
@@ -142,12 +142,10 @@ class DeepExplorationEngine(BasicEngine):
         for iter_t in count():
             print(f'iter: {iter_t}')
             if iter_t % cfg.alg.eval_interval == 0:
-                print("started eval agent")
                 success_rate, ret_mean, ret_std, rets, successes = eval_agent(self.agent,
                                                                               self.env,
                                                                               1,
                                                                               disable_tqdm=True)
-                print("finished eval agent")
                 success_rates.append(success_rate)
                 # logging from train_ppo
                 det_log_info, _ = self.eval(eval_num=cfg.alg.test_num,
@@ -212,7 +210,6 @@ class DeepExplorationEngine(BasicEngine):
                 lst_step_infos.append(infos[tsps[ej] - 1][ej])
             time_steps.extend(tsps)
             if save_eval_traj:
-                print(traj)
                 save_traj(traj, cfg.alg.eval_dir)
             if 'success' in infos[0][0]:
                 successes.extend([infos[tsps[ej] - 1][ej]['success'] for ej in range(rewards.shape[1])])

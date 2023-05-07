@@ -48,9 +48,6 @@ class DeepExplorationRunner(BasicRunner):
             all_dones = np.zeros(env.num_envs, dtype=bool)
         else:
             all_dones = None
-        print("time_steps", time_steps)
-        print("random_action", random_action)
-        print("exploration_enabled", exploration_enabled)
         for t in range(time_steps):
             if render:
                 env.render()
@@ -85,7 +82,7 @@ class DeepExplorationRunner(BasicRunner):
                                                                                           **action_kwargs)
 
                     # TODO: Is this step super expensive?
-                    next_states_from_candidate_actions = [env.simulate_step(action=candidate_action)[0]
+                    next_states_from_candidate_actions = [env.step([torch_to_np(candidate_action), True])[0]
                                                           for candidate_action in candidate_actions]
 
                     # Calculated as average critic value plus exploration bonus (beta times std of critic values)
@@ -96,7 +93,7 @@ class DeepExplorationRunner(BasicRunner):
                                                     1,  # choose 1 action proportional to score
                                                     p=candidate_scores / sum(candidate_scores))[0]
 
-                    action = candidate_actions[action_index]
+                    action = torch_to_np(candidate_actions[action_index])
                     action_info = candidate_infos[action_index]
 
                     self.agent.exploration_steps += 1
@@ -112,7 +109,7 @@ class DeepExplorationRunner(BasicRunner):
             because we need to pass the next state to the agent to calculate the next action. This is a bit
             inefficient, but it's easy. Also, we can think of the deep copied env above as a very
             accurate forward model of the environment, whereas this step is the actual environment.'''
-            next_ob, reward, done, info = env.step(action)
+            next_ob, reward, done, info = env.step([action, False])
 
             if render_image:
                 for img, inf in zip(imgs, info):
@@ -138,7 +135,6 @@ class DeepExplorationRunner(BasicRunner):
                 break
 
         if get_last_val and not evaluation:
-            print("if get_last_val and not evaluation:")
             _, last_val, _ = self.agent.get_act_val_ensemble_stats(traj[-1].next_ob)
             traj.add_extra('last_val', torch_to_np(last_val))
         self.obs = ob if not evaluation else None
