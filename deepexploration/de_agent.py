@@ -116,7 +116,7 @@ class DeepExplorationAgent(BaseAgent):
             return dict(
                 log_prob=torch_to_np(log_prob),
                 entropy=torch_to_np(entropy),
-                val=torch_to_np(avg_val)
+                val=torch_to_np(avg_val).reshape(1)
         )
 
         candidate_actions = [action_from_dist(act_dist, sample=sample) for _ in range(self.k_samples)]
@@ -160,7 +160,7 @@ class DeepExplorationAgent(BaseAgent):
         action_info = dict(
             log_prob=torch_to_np(log_prob),
             entropy=torch_to_np(entropy),
-            val=torch_to_np(avg_val)
+            val=torch_to_np(avg_val).reshape(1)
         )
 
         return torch_to_np(action), action_info
